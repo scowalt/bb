@@ -23,11 +23,6 @@ import { createDesktopBrowserCdpAdapter } from "../src/desktop-browser-cdp-adapt
 import { createDesktopBrowserBroker } from "../src/desktop-browser-broker.js";
 import { createDesktopBrowserBrokerClient } from "../src/desktop-browser-broker-client.js";
 import { captureDesktopBrowserPage } from "../src/desktop-browser-capture.js";
-import { createServerTargetStore } from "../src/server-target.js";
-import {
-  applyServerMove,
-  createServerMoveNoticeStore,
-} from "../src/server-moved.js";
 import type { DesktopBrowserCdpPage } from "../src/desktop-browser-cdp.js";
 import {
   browserPageEvaluationSource,
@@ -45,6 +40,8 @@ import {
   BB_DESKTOP_BROWSER_PAGE_MESSAGE_CHANNEL,
   BB_DESKTOP_BROWSER_PAGE_WORLD_ID,
 } from "../src/desktop-browser-ipc.js";
+
+const SERVER_ORIGIN = "http://127.0.0.1:38886";
 
 function createDesktopBrowserViewManager(
   args: Partial<CreateDesktopBrowserViewManagerArgs> = {},
@@ -2118,10 +2115,12 @@ describe("DesktopBrowserViewManager", () => {
   );
 
   it.each(["local", "enrolled"])(
-    "preserves native pages across server switches without publishing them to another server (%s daemon)",
+    "keeps a window's native pages across its server switches without publishing them to another server (%s daemon)",
     async (daemon) => {
       const threadId = "thr_23456789ab";
       const newServerThreadId = "thr_3456789abc";
+      const firstOrigin = "https://first.example";
+      const secondOrigin = "https://second.example";
       const { manager, hostWindow, view } = createRendererRecoveryFixture(
         91,
         threadId,
@@ -2137,6 +2136,7 @@ describe("DesktopBrowserViewManager", () => {
           restore() {},
           isMinimized: () => false,
         }),
+        firstOrigin,
       );
       const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
       await once(server, "listening");
@@ -2162,38 +2162,17 @@ describe("DesktopBrowserViewManager", () => {
           }),
         );
       });
-      const targetStore = createServerTargetStore({
-        storagePath: join(dataDir, "server-target.json"),
-      });
-      const getServerUrl = () => {
-        const target = targetStore.getTarget();
-        return target.kind === "custom" ? target.url : "https://first.example";
-      };
-      if (daemon === "enrolled") {
-        await writeFile(
-          join(dataDir, DESKTOP_BROWSER_BROKER_DESCRIPTOR_FILE),
-          JSON.stringify({
-            version: 1,
-            hostId: "local-host",
-            serverUrl: "http://127.0.0.1:38886",
-            url: `ws://127.0.0.1:${address.port}/desktop-browser`,
-            token: "b".repeat(64),
-          }),
-          { mode: 0o600 },
-        );
-      }
-      const writeDescriptor = async () => {
-        const serverUrl = getServerUrl();
-        const directory =
-          daemon === "local"
-            ? dataDir
-            : join(dataDir, ".bb-machines", new URL(serverUrl).host);
+      const writeDescriptor = async (
+        directory: string,
+        serverUrl: string,
+        hostId: string,
+      ) => {
         await mkdir(directory, { recursive: true });
         await writeFile(
           join(directory, DESKTOP_BROWSER_BROKER_DESCRIPTOR_FILE),
           JSON.stringify({
             version: 1,
-            hostId: "host-1",
+            hostId,
             serverUrl,
             url: `ws://127.0.0.1:${address.port}/desktop-browser`,
             token: "a".repeat(64),
@@ -2201,75 +2180,94 @@ describe("DesktopBrowserViewManager", () => {
           { mode: 0o600 },
         );
       };
-      await writeDescriptor();
-      const client = createDesktopBrowserBrokerClient({
+      const machineDir = (origin: string) =>
+        join(dataDir, ".bb-machines", new URL(origin).host);
+      if (daemon === "local") {
+        await writeDescriptor(dataDir, firstOrigin, "host-1");
+      } else {
+        await writeDescriptor(dataDir, "http://127.0.0.1:38886", "local-host");
+        await writeDescriptor(machineDir(firstOrigin), firstOrigin, "host-1");
+      }
+      await writeDescriptor(machineDir(secondOrigin), secondOrigin, "host-2");
+      const firstClient = createDesktopBrowserBrokerClient({
         broker,
         dataDir,
         homeDir: dataDir,
-        getServerUrl,
+        serverOrigin: firstOrigin,
       });
-      const hasOriginalTab = (peer: number) =>
-        messages.some(
-          (message) =>
-            message.peer === peer &&
-            message.frame.type === "desktop-browser.changed" &&
-            message.frame.tabs.some((tab) => tab.tabId === "browser:a"),
-        );
+      let secondClient: ReturnType<
+        typeof createDesktopBrowserBrokerClient
+      > | null = null;
+      const hasOriginalTab = (peer: number, since = 0) =>
+        messages
+          .slice(since)
+          .some(
+            (message) =>
+              message.peer === peer &&
+              message.frame.type === "desktop-browser.changed" &&
+              message.frame.tabs.some((tab) => tab.tabId === "browser:a"),
+          );
       try {
         await vi.waitFor(() => expect(hasOriginalTab(1)).toBe(true));
-        client.reconnect();
+        firstClient.reconnect();
         await vi.waitFor(() => expect(hasOriginalTab(2)).toBe(true));
         expect(
           manager.listTabs({ hostWebContentsId: 91, threadId }),
         ).toHaveLength(1);
-        const target = broker.getTarget(91);
-        if (!target) throw new Error("Expected connected desktop");
-        await broker.execute({
+        const firstTarget = broker.getTarget(91);
+        if (!firstTarget) throw new Error("Expected connected desktop");
+        expect(firstTarget.hostId).toBe("host-1");
+        await broker.execute(firstOrigin, {
           type: "desktop.browser.acquire_control",
-          instanceId: target.instanceId,
-          generation: target.generation,
+          instanceId: firstTarget.instanceId,
+          generation: firstTarget.generation,
           threadId,
           leaseId: "origin-lease",
           tabIds: ["browser:a"],
           controllerLabel: "Test",
           expiresAt: Date.now() + 60_000,
         });
-        client.suspend();
-        expect(broker.getControl(91, "browser:a")).toMatchObject({
-          control: null,
-        });
-        expect(broker.getTarget(91)).toBeNull();
-        expect(view.webContents.isDestroyed()).toBe(false);
-        await applyServerMove({
-          move: {
-            moveId: "move-browser-server",
-            oldCopyKept: true,
-            target: { kind: "custom", url: "https://second.example" },
-            toHostName: "Second machine",
-          },
-          targetStore,
-          noticeStore: createServerMoveNoticeStore({
-            storagePath: join(dataDir, "move-notice.json"),
-          }),
-          showNotice: () => undefined,
-        });
-        expect(peers).toBe(2);
-        await writeDescriptor();
-        client.reconnect();
+
+        broker.setWindowServer(91, secondOrigin);
+
         expect(
           manager.listTabs({ hostWebContentsId: 91, threadId: null }),
         ).toEqual([]);
         expect(broker.getControl(91, "browser:a")).toBeNull();
+        expect(broker.getTarget(91)).toBeNull();
+        expect(view.webContents.isDestroyed()).toBe(false);
+        expect(view.visible).toBe(false);
+        expect(view.webContents.audioMuted).toBe(true);
         await vi.waitFor(() =>
           expect(
             messages.some(
               ({ peer, frame }) =>
-                peer === 3 &&
+                peer === 2 &&
                 frame.type === "register" &&
-                frame.serverUrl === getServerUrl(),
+                frame.instances.length === 0,
             ),
           ).toBe(true),
         );
+        secondClient = createDesktopBrowserBrokerClient({
+          broker,
+          dataDir,
+          homeDir: dataDir,
+          serverOrigin: secondOrigin,
+        });
+        await vi.waitFor(() =>
+          expect(broker.getTarget(91)?.hostId).toBe("host-2"),
+        );
+        const secondTarget = broker.getTarget(91);
+        if (!secondTarget) throw new Error("Expected the second server");
+        expect(secondTarget.generation).not.toBe(firstTarget.generation);
+        await expect(
+          broker.execute(firstOrigin, {
+            type: "desktop.browser.list_tabs",
+            instanceId: secondTarget.instanceId,
+            generation: secondTarget.generation,
+            threadId: newServerThreadId,
+          }),
+        ).rejects.toThrow("unavailable");
         manager.attach({
           hostWindow,
           request: {
@@ -2291,22 +2289,22 @@ describe("DesktopBrowserViewManager", () => {
           ).toBe(true),
         );
         expect(
-          messages
-            .filter(({ peer }) => peer === 3)
-            .every(
-              ({ frame }) =>
-                frame.type === "register" ||
-                frame.threadId === newServerThreadId,
-            ),
-        ).toBe(true);
+          messages.some(
+            ({ peer, frame }) =>
+              peer !== 3 &&
+              frame.type === "desktop-browser.changed" &&
+              frame.threadId === newServerThreadId,
+          ),
+        ).toBe(false);
         expect(hasOriginalTab(3)).toBe(false);
-        expect(view.webContents.isDestroyed()).toBe(false);
-        expect(view.visible).toBe(false);
-        expect(view.webContents.audioMuted).toBe(true);
-        await targetStore.setCustomServerUrl("https://first.example");
-        await writeDescriptor();
-        client.reconnect();
-        await vi.waitFor(() => expect(hasOriginalTab(4)).toBe(true));
+
+        const beforeReturn = messages.length;
+        broker.setWindowServer(91, firstOrigin);
+
+        await vi.waitFor(() =>
+          expect(hasOriginalTab(2, beforeReturn)).toBe(true),
+        );
+        expect(hasOriginalTab(3)).toBe(false);
         expect(
           manager.getAutomationTabs({ hostWebContentsId: 91, threadId }),
         ).toEqual([{ tabId: "browser:a", webContents: view.webContents }]);
@@ -2329,7 +2327,8 @@ describe("DesktopBrowserViewManager", () => {
           manager.listTabs({ hostWebContentsId: 91, threadId: null }),
         ).toHaveLength(1);
       } finally {
-        client.stop();
+        firstClient.stop();
+        secondClient?.stop();
         broker.dispose();
         manager.destroyAll();
         for (const socket of server.clients) socket.terminate();
@@ -2351,7 +2350,7 @@ describe("DesktopBrowserViewManager", () => {
       });
       const attach = (url: string) =>
         attachBrowserTab({ manager, hostWindow, tabId: "browser:a", url });
-      manager.setServerOrigin("https://first.example");
+      manager.setWindowServerOrigin(91, "https://first.example");
       attach("https://example.com/first");
       const first = requireFakeView(0);
       const popup = first.webContents.emitWindowOpen(
@@ -2362,7 +2361,7 @@ describe("DesktopBrowserViewManager", () => {
       );
       popup.createWindow?.({});
       const popupWindow = electronMock.fakeWindows[0]!;
-      manager.setServerOrigin("https://second.example");
+      manager.setWindowServerOrigin(91, "https://second.example");
       expect(popupWindow.visible).toBe(false);
       expect(popupWindow.webContents.audioMuted).toBe(true);
       expect(popupWindow.webContents.getBackgroundThrottling()).toBe(true);
@@ -2389,7 +2388,7 @@ describe("DesktopBrowserViewManager", () => {
           threadId: "thread-1",
         }),
       ).toEqual([{ tabId: "browser:a", webContents: second.webContents }]);
-      manager.setServerOrigin("https://first.example");
+      manager.setWindowServerOrigin(91, "https://first.example");
       attach("https://stale.example");
       expect(first.visible).toBe(true);
       expect(popupWindow.visible).toBe(true);
@@ -2403,7 +2402,7 @@ describe("DesktopBrowserViewManager", () => {
           threadId: "thread-1",
         }),
       ).toEqual([{ tabId: "browser:a", webContents: first.webContents }]);
-      manager.setServerOrigin("https://second.example");
+      manager.setWindowServerOrigin(91, "https://second.example");
       attach("https://example.com/reopened");
       manager[cleanup](91);
       expect(first.webContents.isDestroyed()).toBe(true);
@@ -2415,11 +2414,79 @@ describe("DesktopBrowserViewManager", () => {
     },
   );
 
+  it("parks and restores only the pages of the window that switches server", () => {
+    const manager = createDesktopBrowserViewManager({
+      pagePreloadPath: "/browser-preload.js",
+    });
+    const firstWindow = new FakeHostWindow({
+      contentBounds: { width: 700, height: 450 },
+      webContentsId: 91,
+    });
+    const secondWindow = new FakeHostWindow({
+      contentBounds: { width: 700, height: 450 },
+      webContentsId: 92,
+    });
+    manager.setWindowServerOrigin(91, "https://first.example");
+    manager.setWindowServerOrigin(92, "https://first.example");
+    attachBrowserTab({
+      manager,
+      hostWindow: firstWindow,
+      tabId: "browser:a",
+      url: "https://example.com/one",
+    });
+    attachBrowserTab({
+      manager,
+      hostWindow: secondWindow,
+      tabId: "browser:a",
+      url: "https://example.com/two",
+    });
+    const one = requireFakeView(0);
+    const two = requireFakeView(1);
+    const tabsOf = (hostWebContentsId: number) =>
+      manager.getAutomationTabs({ hostWebContentsId, threadId: "thread-1" });
+
+    manager.setWindowServerOrigin(91, "https://second.example");
+
+    expect(one.webContents.isDestroyed()).toBe(false);
+    expect(one.visible).toBe(false);
+    expect(one.webContents.audioMuted).toBe(true);
+    expect(two.visible).toBe(true);
+    expect(tabsOf(91)).toEqual([]);
+    expect(tabsOf(92)).toEqual([
+      { tabId: "browser:a", webContents: two.webContents },
+    ]);
+
+    manager.setWindowServerOrigin(92, "https://second.example");
+    expect(two.visible).toBe(false);
+    expect(tabsOf(92)).toEqual([]);
+
+    manager.setWindowServerOrigin(91, "https://first.example");
+    attachBrowserTab({
+      manager,
+      hostWindow: firstWindow,
+      tabId: "browser:a",
+      url: "https://stale.example",
+    });
+    expect(one.visible).toBe(true);
+    expect(one.webContents.getURL()).toBe("https://example.com/one");
+    expect(two.visible).toBe(false);
+    expect(tabsOf(91)).toEqual([
+      { tabId: "browser:a", webContents: one.webContents },
+    ]);
+    expect(tabsOf(92)).toEqual([]);
+
+    manager.releaseWindow(92);
+    expect(two.webContents.isDestroyed()).toBe(true);
+    expect(one.webContents.isDestroyed()).toBe(false);
+    manager.destroyAll();
+    expect(one.webContents.isDestroyed()).toBe(true);
+  });
+
   it.each(["automation", "capture"])(
     "keeps an inactive server throttled when %s releases the page",
     async (owner) => {
       const { manager, hostWindow } = createRendererRecoveryFixture(91);
-      manager.setServerOrigin("https://first.example");
+      manager.setWindowServerOrigin(91, "https://first.example");
       manager.createTab({
         hostWindow,
         tabId: "browser:automated",
@@ -2465,7 +2532,7 @@ describe("DesktopBrowserViewManager", () => {
         }
         expect(view.webContents.getBackgroundThrottling()).toBe(false);
         const attached = hostWindow.contentView.addedViews.slice();
-        manager.setServerOrigin("https://second.example");
+        manager.setWindowServerOrigin(91, "https://second.example");
         expect(hostWindow.contentView.removedViews).toEqual(attached);
         const parkingWindow = electronMock.fakeParkingWindows[0]!;
         expect(parkingWindow.contentView.children).toEqual(attached);
@@ -2483,7 +2550,7 @@ describe("DesktopBrowserViewManager", () => {
         }
         expect(view.webContents.getBackgroundThrottling()).toBe(true);
         expect(view.webContents.isDestroyed()).toBe(false);
-        manager.setServerOrigin("https://first.example");
+        manager.setWindowServerOrigin(91, "https://first.example");
         expect(hostWindow.contentView.addedViews).toEqual([
           ...attached,
           ...attached,
@@ -2558,9 +2625,10 @@ describe("DesktopBrowserViewManager", () => {
         restore,
         isMinimized: () => true,
       }),
+      SERVER_ORIGIN,
     );
-    broker.setHostId("host-1");
-    const instance = broker.listInstances()[0]!;
+    broker.setHostId(SERVER_ORIGIN, "host-1");
+    const instance = broker.listInstances(SERVER_ORIGIN)[0]!;
     const scope = {
       instanceId: instance.instanceId,
       generation: instance.generation,
@@ -2568,14 +2636,14 @@ describe("DesktopBrowserViewManager", () => {
     };
     let socket: WebSocket | null = null;
     try {
-      await broker.execute({
+      await broker.execute(SERVER_ORIGIN, {
         type: "desktop.browser.create_tab",
         ...scope,
         tabId: "automation",
         url: "about:blank",
         presentation: "hidden",
       });
-      await broker.execute({
+      await broker.execute(SERVER_ORIGIN, {
         type: "desktop.browser.acquire_control",
         ...scope,
         leaseId: "lease",
@@ -2583,7 +2651,7 @@ describe("DesktopBrowserViewManager", () => {
         controllerLabel: "Agent",
         expiresAt: Date.now() + 60000,
       });
-      const connection = await broker.execute({
+      const connection = await broker.execute(SERVER_ORIGIN, {
         type: "desktop.browser.open_connection",
         ...scope,
         leaseId: "lease",
@@ -2650,9 +2718,10 @@ describe("DesktopBrowserViewManager", () => {
         restore() {},
         isMinimized: () => false,
       }),
+      SERVER_ORIGIN,
     );
-    broker.setHostId("host-1");
-    const instance = broker.listInstances()[0];
+    broker.setHostId(SERVER_ORIGIN, "host-1");
+    const instance = broker.listInstances(SERVER_ORIGIN)[0];
     if (!instance) throw new Error("Expected registered instance");
     const scope = {
       instanceId: instance.instanceId,
@@ -2660,7 +2729,7 @@ describe("DesktopBrowserViewManager", () => {
       threadId: "thread-1",
     };
     const acquire = (leaseId: string) =>
-      broker.execute({
+      broker.execute(SERVER_ORIGIN, {
         type: "desktop.browser.acquire_control",
         ...scope,
         leaseId,
@@ -2674,7 +2743,7 @@ describe("DesktopBrowserViewManager", () => {
       await expect(acquire("conflict")).rejects.toThrow(
         "already has a controller",
       );
-      const connection = await broker.execute({
+      const connection = await broker.execute(SERVER_ORIGIN, {
         type: "desktop.browser.open_connection",
         ...scope,
         leaseId: "first",
@@ -2706,11 +2775,14 @@ describe("DesktopBrowserViewManager", () => {
         "replacement",
       );
       await closed;
-      broker.setHostId(null);
+      broker.setHostId(SERVER_ORIGIN, null);
       expect(broker.getControl(91, "browser:a")?.control).toBeNull();
-      broker.setHostId("host-1");
+      broker.setHostId(SERVER_ORIGIN, "host-1");
       await expect(
-        broker.execute({ type: "desktop.browser.list_tabs", ...scope }),
+        broker.execute(SERVER_ORIGIN, {
+          type: "desktop.browser.list_tabs",
+          ...scope,
+        }),
       ).rejects.toThrow("reconnected");
       expect(
         manager.listTabs({ hostWebContentsId: 91, threadId: "thread-1" }),
@@ -3083,7 +3155,7 @@ describe("DesktopBrowserViewManager", () => {
 
   it("bounds cached favicon origins and isolates them between servers", () => {
     const manager = createDesktopBrowserViewManager();
-    manager.setServerOrigin("https://server-a.example");
+    manager.setWindowServerOrigin(91, "https://server-a.example");
     const hostWindow = new FakeHostWindow({
       contentBounds: { width: 700, height: 450 },
       webContentsId: 91,
@@ -3112,7 +3184,7 @@ describe("DesktopBrowserViewManager", () => {
     expect(latest()).toMatchObject({
       faviconUrl: "https://site-40.example/icon.png",
     });
-    manager.setServerOrigin("https://server-b.example");
+    manager.setWindowServerOrigin(91, "https://server-b.example");
     attachBrowserTab({
       manager,
       hostWindow,
@@ -3121,7 +3193,7 @@ describe("DesktopBrowserViewManager", () => {
     });
     requireFakeView(1).webContents.emitDidNavigate("https://site-40.example");
     expect(latest()).toMatchObject({ faviconUrl: null, faviconUrls: [] });
-    manager.setServerOrigin("https://server-a.example");
+    manager.setWindowServerOrigin(91, "https://server-a.example");
     view.webContents.emitDidNavigate("https://site-39.example");
     expect(latest()).toMatchObject({
       faviconUrl: "https://site-39.example/icon.png",
@@ -3243,6 +3315,18 @@ describe("DesktopBrowserViewManager", () => {
       expect(onTabsChanged).toHaveBeenCalledTimes(1);
     },
   );
+
+  it("detaches the tabs of a window that stays open when it releases them", () => {
+    const { manager, hostWindow, view } = createRendererRecoveryFixture(91);
+
+    manager.releaseWindow(91);
+
+    expect(hostWindow.contentView.removedViews).toEqual([view]);
+    expect(view.webContents.isDestroyed()).toBe(true);
+    expect(manager.listTabs({ hostWebContentsId: 91, threadId: null })).toEqual(
+      [],
+    );
+  });
 
   it.each(["detach", "releaseWindow", "destroyAll", "destroyed"] as const)(
     "notifies once after removing a native target through %s",
@@ -4711,16 +4795,16 @@ describe("hidden browser retention", () => {
       manager,
       product: "Chrome/test",
     });
-    broker.registerWindow(hostWindow);
-    broker.setHostId("host-1");
-    const instance = broker.listInstances()[0]!;
+    broker.registerWindow(hostWindow, SERVER_ORIGIN);
+    broker.setHostId(SERVER_ORIGIN, "host-1");
+    const instance = broker.listInstances(SERVER_ORIGIN)[0]!;
     const scope = {
       instanceId: instance.instanceId,
       generation: instance.generation,
       threadId: "thread-1",
     };
     try {
-      await broker.execute({
+      await broker.execute(SERVER_ORIGIN, {
         type: "desktop.browser.acquire_control",
         ...scope,
         leaseId: "retention",
@@ -4732,7 +4816,7 @@ describe("hidden browser retention", () => {
       vi.advanceTimersByTime(6 * 60_000);
       expect(view.webContents.isDestroyed()).toBe(false);
       expect(view.webContents.debugger.isAttached()).toBe(false);
-      await broker.execute({
+      await broker.execute(SERVER_ORIGIN, {
         type: "desktop.browser.release_control",
         ...scope,
         leaseId: "retention",
@@ -4935,17 +5019,17 @@ describe("hidden browser retention", () => {
       webContentsId: 1,
       contentBounds: { width: 1000, height: 800 },
     });
-    manager.setServerOrigin("https://first.example");
+    manager.setWindowServerOrigin(1, "https://first.example");
     attachBrowserTab({
       hostWindow,
       manager,
       tabId: "parked",
       url: "https://example.com/parked",
     });
-    manager.setServerOrigin("https://second.example");
+    manager.setWindowServerOrigin(1, "https://second.example");
     vi.advanceTimersByTime(6 * 60_000);
     expect(requireFakeView(0).webContents.isDestroyed()).toBe(true);
-    manager.setServerOrigin("https://first.example");
+    manager.setWindowServerOrigin(1, "https://first.example");
     expect(
       manager.listTabs({ hostWebContentsId: 1, threadId: null }),
     ).toHaveLength(1);
