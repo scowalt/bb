@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BrowserWindowConstructorOptions } from "electron";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   MACOS_TRAFFIC_LIGHT_INSET_PX,
   MACOS_TRAFFIC_LIGHT_TOP_INSET_PX,
@@ -12,7 +12,6 @@ import {
   type DesktopBrowserWindow,
   type DesktopBrowserWindowCreator,
   type DesktopWindowOpenHandler,
-  type DesktopWindowOpenDevToolsOptions,
   type DesktopWindowWebContents,
 } from "../src/desktop-window-factory.js";
 import type { DesktopContextMenuWebContents } from "../src/desktop-context-menu.js";
@@ -52,7 +51,6 @@ afterEach(async () => {
 });
 
 class FakeDesktopWindowWebContents implements DesktopWindowWebContents {
-  public devToolsOpenCount = 0;
   public id: number;
   public readonly addedDictionaryWords: string[] = [];
   public readonly spellCheckerEnabledValues: boolean[] = [];
@@ -87,12 +85,6 @@ class FakeDesktopWindowWebContents implements DesktopWindowWebContents {
       this.ipcListeners.set(channel, listener);
     },
   };
-
-  openDevTools(options: DesktopWindowOpenDevToolsOptions): void {
-    if (options.mode === "detach") {
-      this.devToolsOpenCount += 1;
-    }
-  }
 
   on(eventName: "dom-ready", listener: () => void): void;
   on(...args: Parameters<DesktopContextMenuWebContents["on"]>): void;
@@ -332,7 +324,6 @@ async function createFactoryHarness(
       return false;
     },
     openExternalUrl() {},
-    onWindowCreated() {},
     shouldCloseWindow: () => true,
     preloadPath: "/tmp/preload.cjs",
     userDataPath: tempDir.path,
@@ -349,7 +340,7 @@ describe("desktop window factory", () => {
   it("keeps saving a window's state after its close is held", async () => {
     const { factory, createdWindows, userDataPath } =
       await createFactoryHarness({ shouldCloseWindow: () => false });
-    await factory.createWindow({ initialUrl: null, stateKey: null });
+    await factory.createWindow({ stateKey: null });
     const window = createdWindows[0]!;
     window.emitClosed();
     expect(window.isDestroyed()).toBe(false);
@@ -364,59 +355,6 @@ describe("desktop window factory", () => {
       .toEqual(window.bounds);
   });
 
-  it("starts every saved page before any finishes and returns saved order", async () => {
-    const original = await createFactoryHarness();
-    for (const stateKey of ["primary", "window-second", "window-third"]) {
-      const browserWindow = await original.factory.createWindow({
-        initialUrl: null,
-        stateKey,
-      });
-      if (!(browserWindow instanceof FakeDesktopWindow))
-        throw new Error("Expected a fake window");
-      browserWindow.bounds.x = original.createdWindows.length * 100;
-    }
-    await original.factory.persistOpenWindows();
-    const releases: Array<() => void> = [];
-    const loads = Array.from(
-      { length: 3 },
-      () => new Promise<void>((resolve) => releases.push(resolve)),
-    );
-    const started: DesktopBrowserWindow[] = [];
-    const completed: DesktopBrowserWindow[] = [];
-    let releaseAll = false;
-    const restarted = await createFactoryHarness({
-      userDataPath: original.userDataPath,
-      onWindowCreated(browserWindow) {
-        const load = loads[started.length];
-        browserWindow.loadURL = async () => {
-          started.push(browserWindow);
-          if (!releaseAll) await load;
-          completed.push(browserWindow);
-        };
-      },
-    });
-    const restoring = restarted.factory.restoreSavedWindows({
-      initialUrl: "http://127.0.0.1:41234",
-    });
-    try {
-      await vi.waitFor(() => expect(started).toHaveLength(3));
-      expect(completed).toHaveLength(0);
-      releases[2]?.();
-      await vi.waitFor(() => expect(completed).toEqual([started[2]]));
-      releases[1]?.();
-      releases[0]?.();
-      expect(
-        (await restoring).map((window) => window.getNormalBounds()),
-      ).toEqual(
-        original.createdWindows.map((window) => window.getNormalBounds()),
-      );
-    } finally {
-      releaseAll = true;
-      for (const release of releases) release();
-      await restoring;
-    }
-  });
-
   it.each([
     [0.5, 4],
     [1.5, 26],
@@ -425,7 +363,7 @@ describe("desktop window factory", () => {
     const { createdWindows, factory } = await createFactoryHarness({
       isMac: true,
     });
-    await factory.createWindow({ initialUrl: null, stateKey: null });
+    await factory.createWindow({ stateKey: null });
     const window = createdWindows[0];
     if (!window) throw new Error("Expected a window");
     window.webContents.zoomFactor = zoomFactor;
@@ -435,31 +373,15 @@ describe("desktop window factory", () => {
     ]);
   });
 
-  it("hands each window over before its first page loads, so the page's IPC is accepted", async () => {
-    const loadedWhenCreated: string[][] = [];
-    const { factory } = await createFactoryHarness({
-      onWindowCreated(browserWindow) {
-        if (!(browserWindow instanceof FakeDesktopWindow))
-          throw new Error("Expected a fake window");
-        loadedWhenCreated.push([...browserWindow.loadedUrls]);
-      },
-    });
-    await factory.createWindow({
-      initialUrl: "http://127.0.0.1:38886",
-      stateKey: null,
-    });
-    expect(loadedWhenCreated).toEqual([[]]);
-  });
-
   it.each([
     { code: "ERR_ABORTED", errno: -3, rejects: false },
     { code: "", errno: -3, rejects: false },
     { code: "ERR_CONNECTION_REFUSED", errno: -102, rejects: true },
   ])(
-    "ignores only aborted loads (errno $errno, code $code) when loading every window",
+    "ignores only aborted loads (errno $errno, code $code) when loading a window",
     async ({ code, errno, rejects }) => {
       const { createdWindows, factory } = await createFactoryHarness();
-      await factory.createWindow({ initialUrl: null, stateKey: null });
+      const { browserWindow } = await factory.createWindow({ stateKey: null });
       const window = createdWindows[0];
       if (!window) throw new Error("Expected a window");
       window.loadURL = async (url: string) => {
@@ -469,7 +391,10 @@ describe("desktop window factory", () => {
           url,
         });
       };
-      const loading = factory.loadUrl({ url: "data:text/html,loading" });
+      const loading = factory.loadUrl({
+        browserWindow,
+        url: "data:text/html,loading",
+      });
       if (rejects) {
         await expect(loading).rejects.toThrow(`(${errno})`);
       } else {
@@ -482,7 +407,7 @@ describe("desktop window factory", () => {
     const { createdWindows, factory } = await createFactoryHarness({
       isMac: false,
     });
-    await factory.createWindow({ initialUrl: null, stateKey: null });
+    await factory.createWindow({ stateKey: null });
     const window = createdWindows[0];
     if (!window) throw new Error("Expected a window");
     expect(
@@ -493,13 +418,13 @@ describe("desktop window factory", () => {
   it("restores the last closed window on Dock reopen and after quitting without windows", async () => {
     const { factory, createdWindows, userDataPath } =
       await createFactoryHarness();
-    await factory.createWindow({ initialUrl: null, stateKey: null });
+    await factory.createWindow({ stateKey: null });
     const window = createdWindows[0]!;
     const bounds = { x: 140, y: 120, width: 1000, height: 700 };
     window.bounds = bounds;
     window.emitClosed();
     await factory.persistOpenWindows();
-    await factory.createWindow({ initialUrl: null, stateKey: null });
+    await factory.createWindow({ stateKey: null });
     expect(createdWindows[1]?.getBounds()).toEqual(bounds);
     expect(
       (await readPersistedWindowStateFile({ userDataPath })).windows,
@@ -509,8 +434,8 @@ describe("desktop window factory", () => {
   it("saves move and resize events without quitting, including simultaneous windows", async () => {
     const { factory, createdWindows, userDataPath } =
       await createFactoryHarness();
-    await factory.createWindow({ initialUrl: null, stateKey: null });
-    await factory.createWindow({ initialUrl: null, stateKey: null });
+    await factory.createWindow({ stateKey: null });
+    await factory.createWindow({ stateKey: null });
     const first = createdWindows[0]!;
     const second = createdWindows[1]!;
     first.bounds = { x: 150, y: 100, width: 1000, height: 700 };
@@ -533,7 +458,7 @@ describe("desktop window factory", () => {
     ).toEqual(["window-fallback"]);
     second.emitClosed();
     await factory.persistOpenWindows();
-    await factory.createWindow({ initialUrl: null, stateKey: null });
+    await factory.createWindow({ stateKey: null });
     expect(createdWindows[2]?.getBounds()).toEqual(second.bounds);
   });
 
@@ -541,7 +466,7 @@ describe("desktop window factory", () => {
     "saves normal bounds during %s so restoring and unmaximizing preserves size",
     async (event) => {
       const { factory, createdWindows } = await createFactoryHarness();
-      await factory.createWindow({ initialUrl: null, stateKey: null });
+      await factory.createWindow({ stateKey: null });
       const window = createdWindows[0]!;
       window.normalBounds = { x: 130, y: 90, width: 1000, height: 700 };
       window.bounds = { x: 0, y: 0, width: 1440, height: 900 };
@@ -549,7 +474,7 @@ describe("desktop window factory", () => {
       window.fullScreen = event === "enter-full-screen";
       await factory.persistOpenWindows();
       window.emitClosed();
-      await factory.createWindow({ initialUrl: null, stateKey: null });
+      await factory.createWindow({ stateKey: null });
       expect(createdWindows[1]?.getBounds()).toEqual(window.normalBounds);
       expect(createdWindows[1]?.isMaximized()).toBe(window.maximized);
       expect(createdWindows[1]?.isFullScreen()).toBe(window.fullScreen);
@@ -559,9 +484,10 @@ describe("desktop window factory", () => {
   it("shares one zoom across windows, new windows, navigation and restart", async () => {
     const { factory, createdWindows, userDataPath } =
       await createFactoryHarness();
-    await factory.createWindow({
-      initialUrl: "https://one.example",
-      stateKey: null,
+    const first = await factory.createWindow({ stateKey: null });
+    await factory.loadUrl({
+      browserWindow: first.browserWindow,
+      url: "https://one.example",
     });
     for (let step = 0; step < 4; step++)
       factory.zoom(createdWindows[0]!.webContents.id, "in");
@@ -571,20 +497,25 @@ describe("desktop window factory", () => {
           (await readPersistedWindowStateFile({ userDataPath })).zoomFactor,
       )
       .toBe(1.4);
-    await factory.createWindow({
-      initialUrl: "https://one.example",
-      stateKey: null,
+    const second = await factory.createWindow({ stateKey: null });
+    await factory.loadUrl({
+      browserWindow: second.browserWindow,
+      url: "https://one.example",
     });
     factory.zoom(createdWindows[1]!.webContents.id, "in");
-    await factory.loadUrl({ url: "https://two.example" });
+    for (const { browserWindow } of [first, second])
+      await factory.loadUrl({ browserWindow, url: "https://two.example" });
     expect(
       createdWindows.map((window) => window.webContents.getZoomFactor()),
     ).toEqual([1.5, 1.5]);
     await factory.persistOpenWindows();
     const restarted = await createFactoryHarness({ userDataPath });
-    await restarted.factory.restoreSavedWindows({
-      initialUrl: "https://one.example",
-    });
+    const restored = await restarted.factory.restoreSavedWindows();
+    for (const { browserWindow } of restored)
+      await restarted.factory.loadUrl({
+        browserWindow,
+        url: "https://one.example",
+      });
     expect(
       restarted.createdWindows.map((window) =>
         window.webContents.getZoomFactor(),
@@ -596,7 +527,7 @@ describe("desktop window factory", () => {
     let quitting = false;
     const { factory, createdWindows, userDataPath } =
       await createFactoryHarness({ isQuitting: () => quitting });
-    await factory.createWindow({ initialUrl: null, stateKey: null });
+    await factory.createWindow({ stateKey: null });
     const window = createdWindows[0]!;
     const bounds = { x: 120, y: 100, width: 1100, height: 750 };
     window.bounds = bounds;
@@ -618,8 +549,8 @@ describe("desktop window factory", () => {
       const { createdWindows, factory } = await createFactoryHarness({
         shouldUseDarkColors: () => dark,
       });
-      await factory.createWindow({ initialUrl: null, stateKey: null });
-      await factory.createWindow({ initialUrl: null, stateKey: null });
+      await factory.createWindow({ stateKey: null });
+      await factory.createWindow({ stateKey: null });
       const [first, second] = createdWindows;
       if (!first || !second) throw new Error("Expected two windows");
       expect(first.backgroundColor).toBe(dark ? "#151515" : "#ffffff");
@@ -638,7 +569,7 @@ describe("desktop window factory", () => {
       isMac: false,
       isLinuxTransparent: true,
     });
-    await factory.createWindow({ initialUrl: null, stateKey: null });
+    await factory.createWindow({ stateKey: null });
     const window = createdWindows[0];
     if (!window) throw new Error("Expected a window");
     for (const listener of window.webContents.themeColorListeners) {
@@ -647,7 +578,7 @@ describe("desktop window factory", () => {
     expect(window.backgroundColor).toBe("#00000000");
   });
 
-  it("creates distinct windows that load the same URL", async () => {
+  it("loads each window's own server without reloading the others", async () => {
     const generatedStateKeys: WindowStateKey[] = ["window-second"];
     const { createdWindows, factory, userDataPath } =
       await createFactoryHarness({
@@ -656,16 +587,22 @@ describe("desktop window factory", () => {
         },
       });
 
-    const firstWindow = await factory.createWindow({
-      initialUrl: "http://127.0.0.1:38886",
-      stateKey: null,
+    const firstWindow = await factory.createWindow({ stateKey: null });
+    const secondWindow = await factory.createWindow({ stateKey: null });
+    await factory.loadUrl({
+      browserWindow: firstWindow.browserWindow,
+      url: "http://127.0.0.1:38886",
     });
-    const secondWindow = await factory.createWindow({
-      initialUrl: "http://127.0.0.1:38886",
-      stateKey: null,
+    await factory.loadUrl({
+      browserWindow: secondWindow.browserWindow,
+      url: "https://studio.tailnet.ts.net:38886",
     });
 
-    expect(firstWindow).not.toBe(secondWindow);
+    expect(firstWindow.browserWindow).not.toBe(secondWindow.browserWindow);
+    expect([firstWindow.stateKey, secondWindow.stateKey]).toEqual([
+      "main",
+      "window-second",
+    ]);
     expect(createdWindows).toHaveLength(2);
     expect(createdWindows[0]?.options.frame).toBe(false);
     expect(createdWindows[0]?.options.minHeight).toBe(MIN_WINDOW_HEIGHT);
@@ -681,7 +618,9 @@ describe("desktop window factory", () => {
       y: MACOS_TRAFFIC_LIGHT_TOP_INSET_PX,
     });
     expect(createdWindows[0]?.loadedUrls).toEqual(["http://127.0.0.1:38886"]);
-    expect(createdWindows[1]?.loadedUrls).toEqual(["http://127.0.0.1:38886"]);
+    expect(createdWindows[1]?.loadedUrls).toEqual([
+      "https://studio.tailnet.ts.net:38886",
+    ]);
     expect(createdWindows[0]?.webContents.getZoomFactor()).toBe(1);
     expect(createdWindows[1]?.webContents.getZoomFactor()).toBe(1);
 
@@ -727,17 +666,14 @@ describe("desktop window factory", () => {
       });
 
     const [firstWindow, secondWindow] = await Promise.all([
-      factory.createWindow({
-        initialUrl: "http://127.0.0.1:38886",
-        stateKey: null,
-      }),
-      factory.createWindow({
-        initialUrl: "http://127.0.0.1:38886",
-        stateKey: null,
-      }),
+      factory.createWindow({ stateKey: null }),
+      factory.createWindow({ stateKey: null }),
     ]);
 
-    expect(firstWindow).not.toBe(secondWindow);
+    expect(firstWindow.browserWindow).not.toBe(secondWindow.browserWindow);
+    expect(new Set([firstWindow.stateKey, secondWindow.stateKey])).toEqual(
+      new Set(["main", "window-concurrent"]),
+    );
     expect(createdWindows).toHaveLength(2);
 
     await factory.persistOpenWindows();
@@ -750,6 +686,30 @@ describe("desktop window factory", () => {
     expect(new Set(stateKeys).size).toBe(2);
   });
 
+  it("restores saved windows under the state keys they were saved with", async () => {
+    const generatedStateKeys: WindowStateKey[] = ["window-second"];
+    const firstLaunch = await createFactoryHarness({
+      createWindowStateKey() {
+        return generatedStateKeys.shift() ?? "window-fallback";
+      },
+    });
+    const initial = await firstLaunch.factory.restoreSavedWindows();
+    expect(initial.map((window) => window.stateKey)).toEqual(["main"]);
+    await firstLaunch.factory.createWindow({ stateKey: null });
+    await firstLaunch.factory.persistOpenWindows();
+
+    const relaunch = await createFactoryHarness({
+      userDataPath: firstLaunch.userDataPath,
+    });
+    const restored = await relaunch.factory.restoreSavedWindows();
+
+    expect(restored.map((window) => window.stateKey)).toEqual([
+      "main",
+      "window-second",
+    ]);
+    expect(relaunch.createdWindows).toHaveLength(2);
+  });
+
   it("opens only policy-approved blank-target links externally and denies every popup", async () => {
     const openedExternalUrls: string[] = [];
     const { createdWindows, factory } = await createFactoryHarness({
@@ -758,10 +718,7 @@ describe("desktop window factory", () => {
       },
     });
 
-    await factory.createWindow({
-      initialUrl: "http://127.0.0.1:38886",
-      stateKey: null,
-    });
+    await factory.createWindow({ stateKey: null });
     const browserWindow = createdWindows[0];
     if (!browserWindow) {
       throw new Error("Expected desktop window");
@@ -824,7 +781,7 @@ describe("desktop window factory", () => {
         isLinuxFrameless,
       });
 
-      await factory.createWindow({ initialUrl: null, stateKey: null });
+      await factory.createWindow({ stateKey: null });
 
       const options = createdWindows[0]?.options;
       expect(options).toMatchObject(present);
