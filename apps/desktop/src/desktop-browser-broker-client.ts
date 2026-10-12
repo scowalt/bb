@@ -138,16 +138,16 @@ export function createDesktopBrowserBrokerClient(args: {
   broker: DesktopBrowserBroker;
   dataDir: string;
   homeDir: string;
-  getServerUrl(): string;
+  serverOrigin: string;
   fetchImpl?: typeof fetch;
 }) {
+  const serverOrigin = args.serverOrigin;
   let socket: WebSocket | null = null;
   let lookup: AbortController | null = null;
   let retry: ReturnType<typeof setTimeout> | null = null;
   let failures = 0;
   let stopped = false;
   let generation = 0;
-  let serverUrl: string | null = args.getServerUrl();
 
   function disconnect(): void {
     if (retry !== null) clearTimeout(retry);
@@ -158,11 +158,11 @@ export function createDesktopBrowserBrokerClient(args: {
     const previous = socket;
     socket = null;
     previous?.terminate();
-    args.broker.setHostId(null);
+    args.broker.setHostId(serverOrigin, null);
   }
 
   function schedule(): void {
-    if (stopped || serverUrl === null || retry !== null) return;
+    if (stopped || retry !== null) return;
     const delay = Math.min(2000 * 2 ** failures, 60_000);
     failures += 1;
     retry = setTimeout(() => {
@@ -173,14 +173,11 @@ export function createDesktopBrowserBrokerClient(args: {
   }
 
   async function connect(): Promise<void> {
-    if (stopped || serverUrl === null || socket !== null || lookup !== null)
-      return;
+    if (stopped || socket !== null || lookup !== null) return;
     const currentGeneration = generation;
     const controller = new AbortController();
     lookup = controller;
     try {
-      const serverOrigin = new URL(serverUrl).origin;
-      args.broker.setServerOrigin(serverOrigin);
       const descriptor = await readServerBrokerDescriptor({
         dataDir: args.dataDir,
         homeDir: args.homeDir,
@@ -202,12 +199,12 @@ export function createDesktopBrowserBrokerClient(args: {
             type: "register",
             hostId: descriptor.hostId,
             serverUrl: descriptor.serverUrl,
-            instances: args.broker.listInstances(),
+            instances: args.broker.listInstances(serverOrigin),
           }),
         );
       };
       const offInstances = args.broker.subscribeInstances(sendRegistration);
-      const offChanged = args.broker.subscribe((event) => {
+      const offChanged = args.broker.subscribe(serverOrigin, (event) => {
         if (connection.readyState === WebSocket.OPEN)
           connection.send(JSON.stringify(event));
       });
@@ -220,7 +217,7 @@ export function createDesktopBrowserBrokerClient(args: {
         }
         failures = 0;
         sendRegistration();
-        args.broker.setHostId(descriptor.hostId);
+        args.broker.setHostId(serverOrigin, descriptor.hostId);
       });
       connection.on("message", (data, binary) => {
         let request;
@@ -243,7 +240,7 @@ export function createDesktopBrowserBrokerClient(args: {
           try {
             const result = desktopBrowserResultSchemas[
               parsed.command.type
-            ].parse(await args.broker.execute(parsed.command));
+            ].parse(await args.broker.execute(serverOrigin, parsed.command));
             if (connection.readyState === WebSocket.OPEN)
               connection.send(
                 JSON.stringify({
@@ -275,7 +272,7 @@ export function createDesktopBrowserBrokerClient(args: {
         offChanged();
         if (socket !== connection) return;
         socket = null;
-        args.broker.setHostId(null);
+        args.broker.setHostId(serverOrigin, null);
         schedule();
       });
     } catch {
@@ -287,12 +284,7 @@ export function createDesktopBrowserBrokerClient(args: {
 
   void connect();
   return {
-    suspend() {
-      serverUrl = null;
-      disconnect();
-    },
     reconnect() {
-      serverUrl = args.getServerUrl();
       failures = 0;
       disconnect();
       void connect();
