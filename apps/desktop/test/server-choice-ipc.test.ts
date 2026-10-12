@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { BbDesktopServerChoice } from "@bb/desktop-contract";
 import { registerServerChoiceIpc } from "../src/server-choice-ipc.js";
 import { buildDesktopServerChoices } from "../src/server-list.js";
 import {
@@ -22,8 +23,31 @@ vi.mock("electron", () => ({ ipcMain: ipc }));
 
 const frame = {};
 const event = { sender: { id: 7, mainFrame: frame }, senderFrame: frame };
+const otherWindowEvent = {
+  sender: { id: 8, mainFrame: frame },
+  senderFrame: frame,
+};
 
 beforeEach(() => vi.clearAllMocks());
+
+function choicesByWindow(webContentsId: number): BbDesktopServerChoice[] {
+  return [
+    {
+      id: "builtin",
+      name: "Local",
+      origin: "http://127.0.0.1:38886",
+      kind: "local",
+      active: webContentsId === 7,
+    },
+    {
+      id: "remote",
+      name: "Remote",
+      origin: "https://remote.example",
+      kind: "custom",
+      active: webContentsId === 8,
+    },
+  ];
+}
 
 describe("server choice IPC", () => {
   it("uses the native discovery policy for list requests and keeps custom URLs private", async () => {
@@ -37,7 +61,7 @@ describe("server choice IPC", () => {
         writeFile: async () => undefined,
       },
     });
-    await store.setCustomServerUrl(
+    const customServerUrl = await store.addCustomServerUrl(
       "https://user:password@custom.example/private",
     );
     const fetchImpl = vi.fn(async () => ({
@@ -75,11 +99,14 @@ describe("server choice IPC", () => {
       applicationWindowWebContentsIds: new Set([7]),
       onListRequested: sync.onListRequested,
       list: () => ({
-        servers: buildDesktopServerChoices(
-          store,
-          servers,
-          "http://127.0.0.1:1234/app",
-        ),
+        servers: buildDesktopServerChoices({
+          activeTarget: { kind: "custom", url: customServerUrl },
+          connectServers: servers,
+          customServers: store.getCustomServers(),
+          getConnectServerName: (handle) => store.getConnectServerName(handle),
+          showBuiltinServer: store.getShowBuiltinServer(),
+          builtinServerUrl: "http://127.0.0.1:1234/app",
+        }),
         connectServersSkipReason: null,
       }),
       select: async () => undefined,
@@ -146,29 +173,14 @@ describe("server choice IPC", () => {
     expect(list(event).servers).toContainEqual(initial[1]);
   });
 
-  it("accepts only inactive native choices from the application main frame", async () => {
+  it("lists and switches servers for the window that asked", async () => {
     const select = vi.fn(async () => undefined);
     const onError = vi.fn();
     registerServerChoiceIpc({
-      applicationWindowWebContentsIds: new Set([7]),
+      applicationWindowWebContentsIds: new Set([7, 8]),
       onListRequested: () => undefined,
-      list: () => ({
-        servers: [
-          {
-            id: "builtin",
-            name: "Local",
-            origin: "http://127.0.0.1:38886",
-            kind: "local",
-            active: true,
-          },
-          {
-            id: "remote",
-            name: "Remote",
-            origin: "https://remote.example",
-            kind: "custom",
-            active: false,
-          },
-        ],
+      list: (webContentsId) => ({
+        servers: choicesByWindow(webContentsId),
         connectServersSkipReason: null,
       }),
       select,
@@ -176,17 +188,30 @@ describe("server choice IPC", () => {
       signInToConnect: () => undefined,
       onError,
     });
+    const list = ipc.handle.mock.calls.find(
+      ([channel]) => channel === BB_DESKTOP_GET_SERVER_CHOICES_CHANNEL,
+    )?.[1];
+    if (!list) throw new Error("Missing list handler");
+    expect(list(event).servers).toEqual(choicesByWindow(7));
+    expect(list(otherWindowEvent).servers).toEqual(choicesByWindow(8));
+
     const request = ipc.on.mock.calls.find(
       ([channel]) => channel === BB_DESKTOP_SELECT_SERVER_CHANNEL,
     )?.[1];
     if (!request) throw new Error("Missing select handler");
     for (const id of ["builtin", "unknown", "https://injected.example", {}, ""])
       request(event, id);
+    request(otherWindowEvent, "remote");
     request({ ...event, senderFrame: {} }, "remote");
     request({ ...event, sender: { id: 99, mainFrame: frame } }, "remote");
     expect(select).not.toHaveBeenCalled();
+
     request(event, "remote");
-    expect(select).toHaveBeenCalledWith("remote");
+    request(otherWindowEvent, "builtin");
+    expect(select.mock.calls).toEqual([
+      [7, "remote"],
+      [8, "builtin"],
+    ]);
     select.mockRejectedValueOnce(new Error("disk full"));
     request(event, "remote");
     await Promise.resolve();
@@ -214,7 +239,7 @@ describe("server choice IPC", () => {
     request({ ...event, sender: { id: 99, mainFrame: frame } });
     expect(addServer).not.toHaveBeenCalled();
     request(event);
-    expect(addServer).toHaveBeenCalledTimes(1);
+    expect(addServer.mock.calls).toEqual([[7]]);
   });
 
   it("opens bb Connect sign-in only while the Server menu offers it", () => {
