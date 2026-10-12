@@ -55,10 +55,6 @@ export type DesktopWindowOpenHandler = (
   details: DesktopWindowOpenDetails,
 ) => DesktopWindowOpenHandlerResult;
 
-export interface DesktopWindowOpenDevToolsOptions {
-  mode: "detach";
-}
-
 export interface DesktopWindowWebContents extends DesktopContextMenuWebContents {
   id: number;
   on(...args: Parameters<DesktopContextMenuWebContents["on"]>): void;
@@ -66,7 +62,6 @@ export interface DesktopWindowWebContents extends DesktopContextMenuWebContents 
     eventName: "did-change-theme-color",
     listener: (event: Event, color: string | null) => void,
   ): void;
-  openDevTools(options: DesktopWindowOpenDevToolsOptions): void;
   setWindowOpenHandler(handler: DesktopWindowOpenHandler): void;
   getZoomFactor(): number;
   setZoomFactor(factor: number): void;
@@ -125,29 +120,22 @@ interface CreateDesktopWindowFactoryArgs {
 }
 
 interface CreateDesktopWindowArgs {
-  initialUrl: string | null;
   stateKey: WindowStateKey | null;
 }
 
-interface RestoreDesktopWindowsArgs {
-  initialUrl: string | null;
-}
-
-interface LoadDesktopWindowsUrlArgs {
-  url: string;
+export interface CreatedDesktopWindow {
+  browserWindow: DesktopBrowserWindow;
+  stateKey: WindowStateKey;
 }
 
 export interface DesktopWindowFactory {
-  createWindow(args: CreateDesktopWindowArgs): Promise<DesktopBrowserWindow>;
+  createWindow(args: CreateDesktopWindowArgs): Promise<CreatedDesktopWindow>;
   focusFirstWindow(): boolean;
   hasOpenWindows(): boolean;
-  loadUrl(args: LoadDesktopWindowsUrlArgs): Promise<void>;
-  openDevTools(): void;
+  loadUrl(args: LoadUrlIntoWindowArgs): Promise<void>;
   persistOpenWindows(): Promise<void>;
   zoom(webContentsId: number, command: BbDesktopZoomCommand): boolean;
-  restoreSavedWindows(
-    args: RestoreDesktopWindowsArgs,
-  ): Promise<DesktopBrowserWindow[]>;
+  restoreSavedWindows(): Promise<CreatedDesktopWindow[]>;
 }
 
 interface ResolveWindowStateKeyArgs {
@@ -295,7 +283,7 @@ export function createDesktopWindowFactory(
 
   async function createWindow(
     createArgs: CreateDesktopWindowArgs,
-  ): Promise<DesktopBrowserWindow> {
+  ): Promise<CreatedDesktopWindow> {
     const stateKey = resolveWindowStateKey({
       activeWindows,
       createWindowStateKey: args.createWindowStateKey,
@@ -406,57 +394,25 @@ export function createDesktopWindowFactory(
         return { action: "deny" };
       });
 
-      if (createArgs.initialUrl !== null) {
-        await loadUrlIntoWindow({
-          browserWindow,
-          url: createArgs.initialUrl,
-        });
-      }
-
-      return browserWindow;
+      return { browserWindow, stateKey };
     } finally {
       pendingStateKeys.delete(stateKey);
     }
   }
 
-  async function restoreSavedWindows(
-    restoreArgs: RestoreDesktopWindowsArgs,
-  ): Promise<DesktopBrowserWindow[]> {
+  async function restoreSavedWindows(): Promise<CreatedDesktopWindow[]> {
     const { windows: entries } = await readPersistedWindowStateFile({
       userDataPath: args.userDataPath,
     });
     if (entries.length === 0) {
-      return [
-        await createWindow({
-          initialUrl: restoreArgs.initialUrl,
-          stateKey: PRIMARY_WINDOW_STATE_KEY,
-        }),
-      ];
+      return [await createWindow({ stateKey: PRIMARY_WINDOW_STATE_KEY })];
     }
 
-    const restoredWindows: DesktopBrowserWindow[] = [];
+    const restoredWindows: CreatedDesktopWindow[] = [];
     for (const entry of entries) {
-      restoredWindows.push(
-        await createWindow({
-          initialUrl: restoreArgs.initialUrl,
-          stateKey: entry.stateKey,
-        }),
-      );
+      restoredWindows.push(await createWindow({ stateKey: entry.stateKey }));
     }
     return restoredWindows;
-  }
-
-  async function loadUrl(args: LoadDesktopWindowsUrlArgs): Promise<void> {
-    const loadPromises: Promise<void>[] = [];
-    for (const browserWindow of activeWindows.values()) {
-      loadPromises.push(
-        loadUrlIntoWindow({
-          browserWindow,
-          url: args.url,
-        }),
-      );
-    }
-    await Promise.all(loadPromises);
   }
 
   function focusFirstWindow(): boolean {
@@ -468,12 +424,6 @@ export function createDesktopWindowFactory(
       return true;
     }
     return false;
-  }
-
-  function openDevTools(): void {
-    for (const browserWindow of activeWindows.values()) {
-      browserWindow.webContents.openDevTools({ mode: "detach" });
-    }
   }
 
   async function persistOpenWindows(): Promise<void> {
@@ -489,8 +439,7 @@ export function createDesktopWindowFactory(
     hasOpenWindows() {
       return activeWindows.size > 0;
     },
-    loadUrl,
-    openDevTools,
+    loadUrl: loadUrlIntoWindow,
     persistOpenWindows,
     zoom(webContentsId, command) {
       const windows = [...activeWindows.values()];

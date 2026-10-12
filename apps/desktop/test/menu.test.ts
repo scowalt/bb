@@ -17,6 +17,7 @@ import { buildDesktopServerChoices } from "../src/server-list.js";
 import {
   createServerTargetStore,
   BUILTIN_SERVER_NAME,
+  type DesktopServerTarget,
 } from "../src/server-target.js";
 
 function menuArgs(
@@ -494,16 +495,26 @@ it.each([
       name: "Laptop",
       url: "https://laptop.getbb.app",
     };
+    let activeTarget: DesktopServerTarget = { kind: "builtin" };
     if (alternatives) {
-      if (custom) await store.setCustomServerUrl("https://custom.example");
-      else await store.setConnectServer(connect);
+      if (custom) {
+        activeTarget = {
+          kind: "custom",
+          url: await store.addCustomServerUrl("https://custom.example"),
+        };
+      } else {
+        activeTarget = { kind: "connect", server: connect };
+      }
     }
-    if (active) await store.setTarget("builtin");
+    if (active) activeTarget = { kind: "builtin" };
     await store.setShowBuiltinServer(show);
-    const choices = buildDesktopServerChoices(
-      store,
-      alternatives && !custom ? [connect] : [],
-    );
+    const choices = buildDesktopServerChoices({
+      activeTarget,
+      connectServers: alternatives && !custom ? [connect] : [],
+      customServers: store.getCustomServers(),
+      getConnectServerName: (handle) => store.getConnectServerName(handle),
+      showBuiltinServer: store.getShowBuiltinServer(),
+    });
     expect(choices.some((choice) => choice.id === "builtin")).toBe(visible);
     expect(choices.filter((choice) => choice.active)).toHaveLength(1);
     const template = buildApplicationMenuTemplate(

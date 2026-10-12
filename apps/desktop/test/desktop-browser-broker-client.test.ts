@@ -94,7 +94,6 @@ it.each([
     );
     const broker = {
       setHostId: vi.fn(),
-      setServerOrigin: vi.fn(),
       listInstances: () => [],
       subscribeInstances: () => () => undefined,
       subscribe: () => () => undefined,
@@ -120,7 +119,7 @@ it.each([
       broker,
       homeDir,
       dataDir: join(homeDir, ".bb"),
-      getServerUrl: () => "https://unrelated-address.example",
+      serverOrigin: "https://unrelated-address.example",
       fetchImpl,
     });
     try {
@@ -140,7 +139,10 @@ it.each([
           await new Promise((resolve) => setTimeout(resolve, 50));
         }
         expect(messages).toEqual([]);
-        expect(broker.setHostId).not.toHaveBeenCalledWith("host_m5");
+        expect(broker.setHostId).not.toHaveBeenCalledWith(
+          "https://unrelated-address.example",
+          "host_m5",
+        );
         fetchImpl.mockImplementation(async (_input, init) => {
           const body = JSON.parse(String(init?.body));
           if (body.hostId === "host_stalled") return stall(init);
@@ -152,9 +154,8 @@ it.each([
               .digest("hex"),
           });
         });
-        client.suspend();
-        expect(stalledSignals.every((signal) => signal.aborted)).toBe(true);
         client.reconnect();
+        expect(stalledSignals.every((signal) => signal.aborted)).toBe(true);
       }
       await vi.waitFor(() =>
         expect(messages).toEqual([
@@ -166,7 +167,10 @@ it.each([
           },
         ]),
       );
-      expect(broker.setHostId).toHaveBeenCalledWith("host_m5");
+      expect(broker.setHostId).toHaveBeenCalledWith(
+        "https://unrelated-address.example",
+        "host_m5",
+      );
       expect(new Set(challenges).size).toBe(challenges.length);
       expect(stalledSignals.length).toBeGreaterThan(0);
       expect(stalledSignals.every((signal) => signal.aborted)).toBe(true);
@@ -207,7 +211,6 @@ async function writeDescriptor(
 function stubBroker() {
   return {
     setHostId: vi.fn(),
-    setServerOrigin: vi.fn(),
     listInstances: () => [],
     subscribeInstances: () => () => undefined,
     subscribe: () => () => undefined,
@@ -231,7 +234,7 @@ it("registers a broker enrolled at the selected address without a server proof",
     broker: stubBroker(),
     homeDir,
     dataDir: join(homeDir, ".bb"),
-    getServerUrl: () => "https://trusted.example",
+    serverOrigin: "https://trusted.example",
     fetchImpl,
   });
   try {
@@ -258,7 +261,7 @@ it("backs off proof requests while no broker can be verified", async () => {
     broker: stubBroker(),
     homeDir,
     dataDir: join(homeDir, ".bb"),
-    getServerUrl: () => "https://unrelated-address.example",
+    serverOrigin: "https://unrelated-address.example",
     fetchImpl,
   });
   try {

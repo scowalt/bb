@@ -298,7 +298,7 @@ interface SetEntryDesiredBoundsArgs {
 }
 
 export interface DesktopBrowserViewManager {
-  setServerOrigin(serverOrigin: string): void;
+  setWindowServerOrigin(hostWebContentsId: number, serverOrigin: string): void;
   createTab(args: {
     hostWindow: DesktopBrowserHostWindow;
     tabId: string;
@@ -488,13 +488,10 @@ export function createDesktopBrowserViewManager(
 ): DesktopBrowserViewManager {
   const partition = args.partition ?? BB_BROWSER_PARTITION;
   const pagePreloadPath = args.pagePreloadPath;
-  let entries = new Map<string, BrowserViewEntry>();
-  const serverEntries = new Map<string, Map<string, BrowserViewEntry>>();
-  const faviconCaches = new WeakMap<
-    Map<string, BrowserViewEntry>,
-    Map<string, string[]>
-  >();
-  let serverOrigin: string | null = null;
+  const entries = new Map<string, BrowserViewEntry>();
+  const parkedEntries = new Map<string, Map<string, BrowserViewEntry>>();
+  const windowServerOrigins = new Map<number, string>();
+  const faviconCaches = new Map<string | null, Map<string, string[]>>();
   let parkingWindow: BaseWindow | null = null;
   const automationTabListeners = new Set<() => void>();
   const popupWindows = new Set<BrowserWindow>();
@@ -522,6 +519,19 @@ export function createDesktopBrowserViewManager(
     return tabs;
   }
 
+  function moveColdTabs(
+    from: Map<string, BrowserViewEntry>,
+    to: Map<string, BrowserViewEntry>,
+    prefix: string,
+  ): void {
+    const source = coldTabsFor(from);
+    for (const [key, cold] of [...source]) {
+      if (!key.startsWith(prefix)) continue;
+      source.delete(key);
+      coldTabsFor(to).set(key, cold);
+    }
+  }
+
   function isThreadDiscarded(entry: BrowserViewEntry): boolean {
     return discardedThreads.has(
       `${entry.hostWindow.webContents.id}:${entry.threadId}`,
@@ -540,13 +550,12 @@ export function createDesktopBrowserViewManager(
     if (sweepTimer !== null) return;
     sweepTimer = setInterval(() => {
       evictIdleEntries();
-      const hasHiddenUserPage = [
-        ...new Set([entries, ...serverEntries.values()]),
-      ].some((registry) =>
-        [...registry.values()].some(
-          (entry) =>
-            !entry.visible && (!entry.agentOwned || isThreadDiscarded(entry)),
-        ),
+      const hasHiddenUserPage = [entries, ...parkedEntries.values()].some(
+        (registry) =>
+          [...registry.values()].some(
+            (entry) =>
+              !entry.visible && (!entry.agentOwned || isThreadDiscarded(entry)),
+          ),
       );
       if (!hasHiddenUserPage && sweepTimer !== null) {
         clearInterval(sweepTimer);
@@ -592,7 +601,7 @@ export function createDesktopBrowserViewManager(
 
   function evictIdleEntries(): void {
     const now = Date.now();
-    const candidates = [...new Set([entries, ...serverEntries.values()])]
+    const candidates = [entries, ...parkedEntries.values()]
       .flatMap((registry) => [...registry])
       .filter(([, entry]) => isEvictable(entry))
       .sort(([, a], [, b]) => b.idleSince - a.idleSince);
@@ -667,6 +676,42 @@ export function createDesktopBrowserViewManager(
       const emptyWindow = parkingWindow;
       parkingWindow = null;
       emptyWindow.destroy();
+    }
+  }
+
+  function parkEntry(entry: BrowserViewEntry): void {
+    setEntryVisible(entry, false);
+    setDesktopBrowserServerActive(entry.webContents, false);
+    applyEntryVisibility(entry, entry.hostWindow);
+    if (!entry.hostWindow.isDestroyed())
+      entry.hostWindow.contentView.removeChildView(entry.view);
+    if (parkingWindow === null || parkingWindow.isDestroyed()) {
+      parkingWindow = new BaseWindow({
+        show: false,
+        focusable: false,
+        skipTaskbar: true,
+      });
+      parkingWindow.excludedFromShownWindowsMenu = true;
+    }
+    parkingWindow.contentView.addChildView(entry.view);
+    for (const popup of entry.popupWindows) {
+      if (popup.isDestroyed()) continue;
+      popup.webContents.setAudioMuted(true);
+      setDesktopBrowserServerActive(popup.webContents, false);
+      popup.hide();
+    }
+  }
+
+  function restoreEntry(entry: BrowserViewEntry): void {
+    removeParkedView(entry.view);
+    if (!entry.hostWindow.isDestroyed())
+      entry.hostWindow.contentView.addChildView(entry.view);
+    setDesktopBrowserServerActive(entry.webContents, true);
+    for (const popup of entry.popupWindows) {
+      if (popup.isDestroyed()) continue;
+      setDesktopBrowserServerActive(popup.webContents, true);
+      popup.webContents.setAudioMuted(false);
+      popup.showInactive();
     }
   }
 
@@ -1183,10 +1228,12 @@ export function createDesktopBrowserViewManager(
       refresh();
     });
     let pageFaviconOrigin: string | null = null;
-    let faviconCache = faviconCaches.get(entry.registry);
+    const faviconScope =
+      windowServerOrigins.get(hostWindow.webContents.id) ?? null;
+    let faviconCache = faviconCaches.get(faviconScope);
     if (faviconCache === undefined) {
       faviconCache = new Map<string, string[]>();
-      faviconCaches.set(entry.registry, faviconCache);
+      faviconCaches.set(faviconScope, faviconCache);
     }
     const originFavicons = faviconCache;
     webContents.on("did-navigate", () => {
@@ -1489,50 +1536,37 @@ export function createDesktopBrowserViewManager(
   }
 
   return {
-    setServerOrigin(value) {
-      if (serverOrigin === value) return;
-      if (serverOrigin === null) {
-        serverOrigin = value;
-        serverEntries.set(value, entries);
-        return;
+    setWindowServerOrigin(hostWebContentsId, value) {
+      const previous = windowServerOrigins.get(hostWebContentsId);
+      if (previous === value) return;
+      windowServerOrigins.set(hostWebContentsId, value);
+      if (previous === undefined) return;
+      resizingHostIds.delete(hostWebContentsId);
+      const prefix = `${hostWebContentsId}:`;
+      const parking =
+        parkedEntries.get(previous) ?? new Map<string, BrowserViewEntry>();
+      for (const [key, entry] of [...entries]) {
+        if (!key.startsWith(prefix)) continue;
+        parkEntry(entry);
+        entries.delete(key);
+        entry.registry = parking;
+        parking.set(key, entry);
       }
-      resizingHostIds.clear();
-      for (const entry of entries.values()) {
-        setEntryVisible(entry, false);
-        setDesktopBrowserServerActive(entry.webContents, false);
-        applyEntryVisibility(entry, entry.hostWindow);
-        if (!entry.hostWindow.isDestroyed())
-          entry.hostWindow.contentView.removeChildView(entry.view);
-        if (parkingWindow === null || parkingWindow.isDestroyed()) {
-          parkingWindow = new BaseWindow({
-            show: false,
-            focusable: false,
-            skipTaskbar: true,
-          });
-          parkingWindow.excludedFromShownWindowsMenu = true;
+      moveColdTabs(entries, parking, prefix);
+      if (parking.size > 0 || coldTabsFor(parking).size > 0)
+        parkedEntries.set(previous, parking);
+      const restoring = parkedEntries.get(value);
+      if (restoring !== undefined) {
+        for (const [key, entry] of [...restoring]) {
+          if (!key.startsWith(prefix)) continue;
+          restoring.delete(key);
+          entry.registry = entries;
+          entries.set(key, entry);
+          restoreEntry(entry);
         }
-        parkingWindow.contentView.addChildView(entry.view);
-        for (const popup of entry.popupWindows) {
-          if (popup.isDestroyed()) continue;
-          popup.webContents.setAudioMuted(true);
-          setDesktopBrowserServerActive(popup.webContents, false);
-          popup.hide();
-        }
-      }
-      serverOrigin = value;
-      entries = serverEntries.get(value) ?? new Map();
-      serverEntries.set(value, entries);
-      for (const entry of entries.values()) {
-        removeParkedView(entry.view);
-        if (!entry.hostWindow.isDestroyed())
-          entry.hostWindow.contentView.addChildView(entry.view);
-        setDesktopBrowserServerActive(entry.webContents, true);
-        for (const popup of entry.popupWindows) {
-          if (popup.isDestroyed()) continue;
-          setDesktopBrowserServerActive(popup.webContents, true);
-          popup.webContents.setAudioMuted(false);
-          popup.showInactive();
-        }
+        moveColdTabs(restoring, entries, prefix);
+        if (restoring.size === 0 && coldTabsFor(restoring).size === 0)
+          parkedEntries.delete(value);
       }
       notifyAutomationTabs();
     },
@@ -1873,18 +1907,25 @@ export function createDesktopBrowserViewManager(
     },
     releaseWindow(hostWebContentsId) {
       resizingHostIds.delete(hostWebContentsId);
+      windowServerOrigins.delete(hostWebContentsId);
       const prefix = `${hostWebContentsId}:`;
       for (const key of [...discardedThreads]) {
         if (key.startsWith(prefix)) discardedThreads.delete(key);
       }
-      for (const registry of new Set([entries, ...serverEntries.values()])) {
+      for (const registry of [entries, ...parkedEntries.values()]) {
         for (const key of [...coldTabsFor(registry).keys()]) {
           if (key.startsWith(prefix)) coldTabsFor(registry).delete(key);
         }
+      }
+      for (const [key, entry] of [...entries]) {
+        if (key.startsWith(prefix)) destroyEntry(entry.hostWindow, key, entry);
+      }
+      for (const [serverOrigin, registry] of [...parkedEntries]) {
         for (const [key, entry] of [...registry]) {
-          if (!key.startsWith(prefix)) continue;
-          disposeEntry(key, entry);
+          if (key.startsWith(prefix)) disposeEntry(key, entry);
         }
+        if (registry.size === 0 && coldTabsFor(registry).size === 0)
+          parkedEntries.delete(serverOrigin);
       }
     },
     destroyAll() {
@@ -1898,12 +1939,13 @@ export function createDesktopBrowserViewManager(
         }
       }
       popupWindows.clear();
-      for (const registry of new Set([entries, ...serverEntries.values()])) {
+      for (const registry of [entries, ...parkedEntries.values()]) {
         for (const [key, entry] of [...registry]) disposeEntry(key, entry);
-        faviconCaches.delete(registry);
         coldTabs.delete(registry);
       }
-      serverEntries.clear();
+      parkedEntries.clear();
+      windowServerOrigins.clear();
+      faviconCaches.clear();
     },
   };
 }
