@@ -5,6 +5,9 @@ import {
 
 type DesktopReleaseChannel = "latest" | "nightly";
 
+const DEFAULT_DESKTOP_UPDATE_REPOSITORY = "get-bb/bb";
+const DESKTOP_UPDATE_REPOSITORY_PATTERN = /^[\w.-]+\/[\w.-]+$/u;
+
 interface DesktopReleaseInfo {
   applicationName: "bb" | "bb Nightly";
   channel: DesktopReleaseChannel;
@@ -15,6 +18,7 @@ interface DesktopReleaseInfo {
 
 export function createDesktopReleaseInfo(
   channel: DesktopReleaseChannel,
+  updateRepository: string,
 ): DesktopReleaseInfo {
   const nightly = channel === "nightly";
   const releaseTag = nightly ? "desktop-nightly" : "desktop-latest";
@@ -24,7 +28,7 @@ export function createDesktopReleaseInfo(
     channel,
     iconFileName: nightly ? "icon-nightly.png" : "icon.png",
     releaseTag,
-    updateReleaseBaseUrl: `https://github.com/get-bb/bb/releases/download/${releaseTag}/`,
+    updateReleaseBaseUrl: `https://github.com/${updateRepository}/releases/download/${releaseTag}/`,
   };
 }
 
@@ -43,11 +47,27 @@ function resolveBuiltDesktopReleaseChannel(
   );
 }
 
+export function resolveBuiltDesktopUpdateRepository(
+  rawRepository: string | undefined,
+): string {
+  if (rawRepository === undefined || rawRepository.length === 0) {
+    return DEFAULT_DESKTOP_UPDATE_REPOSITORY;
+  }
+  if (DESKTOP_UPDATE_REPOSITORY_PATTERN.test(rawRepository)) {
+    return rawRepository;
+  }
+
+  throw new Error(
+    `Built desktop update repository must be a GitHub owner/name, got ${rawRepository}.`,
+  );
+}
+
 export const DESKTOP_RELEASE_CHANNEL = resolveBuiltDesktopReleaseChannel(
   process.env.BB_DESKTOP_RELEASE_CHANNEL,
 );
 export const DESKTOP_RELEASE_INFO = createDesktopReleaseInfo(
   DESKTOP_RELEASE_CHANNEL,
+  resolveBuiltDesktopUpdateRepository(process.env.BB_DESKTOP_UPDATE_REPOSITORY),
 );
 const DESKTOP_UPDATE_RELEASE_BASE_URL =
   DESKTOP_RELEASE_INFO.updateReleaseBaseUrl;

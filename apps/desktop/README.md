@@ -355,6 +355,31 @@ is baked into the Electron main/preload bundles and selects the nightly product
 identity, yellow icon, and update URLs. Omit the variable (or set it to
 `latest`) for stable and local builds.
 
+## Fork builds
+
+A fork can publish its own macOS builds that update themselves from the fork's
+releases instead of `get-bb/bb`. Two build-time variables make that work:
+
+| Variable                       | Effect                                                                                                                                                                                                   |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `BB_DESKTOP_UPDATE_REPOSITORY` | GitHub `owner/name` whose `desktop-latest` (or `desktop-nightly`) release the version check and the updater read. Baked into the bundles. Defaults to `get-bb/bb`.                                       |
+| `BB_DESKTOP_SIGNING_IDENTITY`  | SHA-1 hash or name of a keychain identity macOS does not trust, such as a self-signed certificate. The app is signed with it and not notarized. `BB_DESKTOP_SIGNING_KEYCHAIN` names the keychain to use. |
+
+macOS installs an update only when it is signed by the same identity as the
+running app, so every build must use the same certificate. An ad-hoc signed
+build can never update in place.
+
+The `Fork Desktop Release` workflow (`fork-desktop-release.yml`) runs on every
+push to a fork's `main` and on manual dispatch. It versions each build
+`<upstream version>-fork.<run number>`, signs it with the certificate in the
+`FORK_MACOS_SIGNING_P12` (base64 `.p12`) and `FORK_MACOS_SIGNING_PASSWORD`
+repository secrets, and publishes it to a `desktop-v<version>` release and the
+moving `desktop-latest` release. Install the first build by hand, using the
+commands in its release notes. `gh release download` does not quarantine the
+download, so Gatekeeper does not block it. A copy downloaded in a browser needs
+`xattr -dr com.apple.quarantine /Applications/bb.app` first. Later builds
+install through the app's own update flow.
+
 ## About panel
 
 The app menu's About item opens a message box listing the facts a bug report
