@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  createDesktopReleaseInfo,
   createDesktopUpdateFeedUrl,
+  resolveBuiltDesktopUpdateRepository,
   resolveDesktopUpdateSupport,
 } from "../src/desktop-update-provider.js";
 
@@ -15,6 +17,31 @@ describe("desktop update feed url", () => {
     expect(createDesktopUpdateFeedUrl("windows")).toBe(
       "https://github.com/get-bb/bb/releases/download/desktop-latest/desktop-version-windows.json",
     );
+  });
+});
+
+describe("desktop update repository", () => {
+  it("reads updates from get-bb/bb unless a build names another repository", () => {
+    expect(resolveBuiltDesktopUpdateRepository(undefined)).toBe("get-bb/bb");
+    expect(resolveBuiltDesktopUpdateRepository("")).toBe("get-bb/bb");
+    expect(
+      createDesktopReleaseInfo(
+        "latest",
+        resolveBuiltDesktopUpdateRepository("scowalt/bb"),
+      ).updateReleaseBaseUrl,
+    ).toBe("https://github.com/scowalt/bb/releases/download/desktop-latest/");
+  });
+
+  it("rejects a built repository that is not a GitHub owner/name", () => {
+    for (const repository of [
+      "https://github.com/scowalt/bb",
+      "scowalt",
+      "scowalt/bb/releases",
+    ]) {
+      expect(() => resolveBuiltDesktopUpdateRepository(repository)).toThrow(
+        "must be a GitHub owner/name",
+      );
+    }
   });
 });
 
