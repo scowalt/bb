@@ -6,6 +6,7 @@ import {
   createDesktopReleaseConfig,
   createDesktopUpdateReleaseBaseUrl,
   resolveDesktopReleaseChannel,
+  resolveDesktopUpdateRepository,
 } from "./desktop-release-channel.mjs";
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
@@ -35,6 +36,9 @@ const requiredSigningEnvironmentKeys = [
   ...codeSigningKeys,
   ...notarizationKeys,
 ];
+
+const selfSignedIdentityKey = "BB_DESKTOP_SIGNING_IDENTITY";
+const selfSignedSignHookPath = "./scripts/sign-with-keychain-identity.cjs";
 
 const printConfigFlag = "--print-config";
 
@@ -82,6 +86,10 @@ function logSigningPlan(signingPlan) {
         "macOS code signing enabled; electron-builder will derive the identity from CSC_LINK.",
       );
     }
+  } else if (signingPlan.mode === "self-signed") {
+    console.log(
+      `macOS code signing with self-signed identity "${signingPlan.identityName}". Notarization skipped.`,
+    );
   } else if (signingPlan.mode === "keychain") {
     console.log(
       "macOS code signing via keychain auto-discovery; artifacts stay unsigned if no identity is installed. Notarization skipped.",
@@ -116,6 +124,12 @@ function autoDiscoveryExplicitlyDisabled(env) {
  *   evaluate every exec in the app's process tree and can stall execs
  *   system-wide. Machines without a signing identity fall back to unsigned
  *   artifacts inside electron-builder.
+ * - "self-signed": no secrets and BB_DESKTOP_SIGNING_IDENTITY names a keychain
+ *   identity macOS does not trust, such as a self-signed certificate. Every
+ *   build signed with it satisfies the previous build's designated
+ *   requirement, so in-app updates install without notarization.
+ *   electron-builder only signs with trusted identities, so the config takes
+ *   its ad-hoc path and a sign hook substitutes the identity.
  * - "disabled": no secrets and CSC_IDENTITY_AUTO_DISCOVERY=false — explicitly
  *   unsigned (the CI path for workflow-artifact-only builds).
  */
@@ -141,6 +155,22 @@ function createSigningPlan(env) {
     );
   }
 
+  if (envValueIsSet(env[selfSignedIdentityKey])) {
+    if (hasAnySigningKeys) {
+      throw new Error(
+        `${selfSignedIdentityKey} cannot be combined with signing/notarization secrets. Present: ${formatEnvironmentKeyList(
+          presentSigningKeys,
+        )}.`,
+      );
+    }
+
+    return {
+      mode: "self-signed",
+      identityName: env[selfSignedIdentityKey].trim(),
+      notarizationEnabled: false,
+    };
+  }
+
   if (hasAllSigningKeys) {
     return {
       mode: "environment",
@@ -162,6 +192,7 @@ function resolveElectronBuilderConfig(baseConfig, env, electronBuilderArgs) {
   const signingPlan = createSigningPlan(env);
   const releaseChannel = resolveDesktopReleaseChannel(env);
   const releaseConfig = createDesktopReleaseConfig(releaseChannel);
+  const updateRepository = resolveDesktopUpdateRepository(env);
   const config = cloneJson(baseConfig);
   const mac = {
     ...config.mac,
@@ -171,6 +202,9 @@ function resolveElectronBuilderConfig(baseConfig, env, electronBuilderArgs) {
 
   if (signingPlan.mode === "disabled") {
     mac.identity = null;
+  } else if (signingPlan.mode === "self-signed") {
+    mac.identity = "-";
+    mac.sign = selfSignedSignHookPath;
   } else if (signingPlan.identityName) {
     mac.identity = signingPlan.identityName;
   } else {
@@ -201,7 +235,10 @@ function resolveElectronBuilderConfig(baseConfig, env, electronBuilderArgs) {
     {
       channel: releaseChannel,
       provider: "generic",
-      url: createDesktopUpdateReleaseBaseUrl(releaseConfig.releaseTag),
+      url: createDesktopUpdateReleaseBaseUrl(
+        updateRepository,
+        releaseConfig.releaseTag,
+      ),
     },
   ];
 

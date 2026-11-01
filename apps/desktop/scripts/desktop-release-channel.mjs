@@ -1,4 +1,7 @@
 const DESKTOP_RELEASE_CHANNEL_ENV_NAME = "BB_DESKTOP_RELEASE_CHANNEL";
+const DESKTOP_UPDATE_REPOSITORY_ENV_NAME = "BB_DESKTOP_UPDATE_REPOSITORY";
+const DEFAULT_DESKTOP_UPDATE_REPOSITORY = "get-bb/bb";
+const DESKTOP_UPDATE_REPOSITORY_PATTERN = /^[\w.-]+\/[\w.-]+$/u;
 
 export function resolveDesktopReleaseChannel(env) {
   const rawChannel = env[DESKTOP_RELEASE_CHANNEL_ENV_NAME]?.trim();
@@ -11,6 +14,20 @@ export function resolveDesktopReleaseChannel(env) {
 
   throw new Error(
     `${DESKTOP_RELEASE_CHANNEL_ENV_NAME} must be latest or nightly, got ${rawChannel}.`,
+  );
+}
+
+export function resolveDesktopUpdateRepository(env) {
+  const rawRepository = env[DESKTOP_UPDATE_REPOSITORY_ENV_NAME]?.trim();
+  if (rawRepository === undefined || rawRepository.length === 0) {
+    return DEFAULT_DESKTOP_UPDATE_REPOSITORY;
+  }
+  if (DESKTOP_UPDATE_REPOSITORY_PATTERN.test(rawRepository)) {
+    return rawRepository;
+  }
+
+  throw new Error(
+    `${DESKTOP_UPDATE_REPOSITORY_ENV_NAME} must be a GitHub owner/name, got ${rawRepository}.`,
   );
 }
 
@@ -68,6 +85,6 @@ export function createDesktopReleaseConfig(channel) {
   };
 }
 
-export function createDesktopUpdateReleaseBaseUrl(releaseTag) {
-  return `https://github.com/get-bb/bb/releases/download/${releaseTag}/`;
+export function createDesktopUpdateReleaseBaseUrl(repository, releaseTag) {
+  return `https://github.com/${repository}/releases/download/${releaseTag}/`;
 }
