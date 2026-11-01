@@ -2,7 +2,10 @@ import { execFileSync } from "node:child_process";
 import { readFile, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import { build } from "esbuild";
-import { resolveDesktopReleaseChannel } from "./desktop-release-channel.mjs";
+import {
+  resolveDesktopReleaseChannel,
+  resolveDesktopUpdateRepository,
+} from "./desktop-release-channel.mjs";
 
 const packageRoot = process.cwd();
 const distDir = resolve(packageRoot, "dist");
@@ -70,6 +73,7 @@ const pluginSdkVersion = readPackageVersion(
   "packages/plugin-sdk/package.json",
 );
 const desktopReleaseChannel = resolveDesktopReleaseChannel(process.env);
+const desktopUpdateRepository = resolveDesktopUpdateRepository(process.env);
 const desktopCommit = readBuildCommit(process.env);
 const desktopBuildDate = readBuildDate(process.env);
 
@@ -82,6 +86,9 @@ const commonOptions = {
       JSON.stringify(pluginSdkVersion),
     "process.env.BB_DESKTOP_RELEASE_CHANNEL": JSON.stringify(
       desktopReleaseChannel,
+    ),
+    "process.env.BB_DESKTOP_UPDATE_REPOSITORY": JSON.stringify(
+      desktopUpdateRepository,
     ),
     "process.env.BB_DESKTOP_VERSION": JSON.stringify(desktopVersion),
   },
