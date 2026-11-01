@@ -1,0 +1,246 @@
+name: Fork Desktop Release
+
+# Builds the macOS arm64 desktop app for a fork of get-bb/bb, signs it with
+# the fork's self-signed certificate, and publishes it to the fork's
+# desktop-latest release. Builds made here check that release for updates and
+# install the next build in place, because every build carries the same
+# signing identity. See "Fork builds" in apps/desktop/README.md.
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  NODE_VERSION: "22.x"
+  PNPM_VERSION: "9.15.0"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-desktop-release
+  cancel-in-progress: false
+
+jobs:
+  macos:
+    name: Apple Silicon desktop release
+    if: github.repository != 'get-bb/bb'
+    runs-on: macos-26
+    timeout-minutes: 120
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Check signing secrets
+        env:
+          FORK_MACOS_SIGNING_P12: ${{ secrets.FORK_MACOS_SIGNING_P12 }}
+          FORK_MACOS_SIGNING_PASSWORD: ${{ secrets.FORK_MACOS_SIGNING_PASSWORD }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in FORK_MACOS_SIGNING_P12 FORK_MACOS_SIGNING_PASSWORD; do
+            if [[ -z "${!name:-}" ]]; then
+              missing+=("$name")
+            fi
+          done
+          if [[ "${#missing[@]}" -gt 0 ]]; then
+            echo "::error::Missing repository secrets: ${missing[*]}. Every build must be signed with the same certificate, or installed apps cannot update to it."
+            exit 1
+          fi
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: ${{ env.PNPM_VERSION }}
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Verify arm64 runner
+        run: test "$(uname -m)" = "arm64"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --prefer-offline
+
+      - name: Typecheck desktop and launcher
+        run: pnpm exec turbo run typecheck --filter=@bb/desktop --filter=bb-app --output-logs=new-only
+
+      - name: Install Electron before parallel tests
+        run: ELECTRON_RUN_AS_NODE=1 pnpm --filter @bb/desktop exec electron --version
+
+      - name: Test desktop
+        run: pnpm exec turbo run test --filter=@bb/desktop --force --output-logs=new-only
+
+      # Upstream versions only change on upstream releases, so each build adds
+      # the run number to stay ahead of the build already installed.
+      - name: Set fork version
+        id: version
+        run: |
+          set -euo pipefail
+          upstream_version="$(node -p "require('./apps/desktop/package.json').version")"
+          version="${upstream_version%%-*}-fork.${GITHUB_RUN_NUMBER}"
+          node -e '
+            const fs = require("node:fs");
+            const path = "apps/desktop/package.json";
+            const pkg = JSON.parse(fs.readFileSync(path, "utf8"));
+            pkg.version = process.argv[1];
+            fs.writeFileSync(path, JSON.stringify(pkg, null, 2) + "\n");
+          ' "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Import signing certificate
+        env:
+          FORK_MACOS_SIGNING_P12: ${{ secrets.FORK_MACOS_SIGNING_P12 }}
+          FORK_MACOS_SIGNING_PASSWORD: ${{ secrets.FORK_MACOS_SIGNING_PASSWORD }}
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/fork-signing.keychain-db"
+          keychain_password="$(openssl rand -hex 24)"
+          certificate="$RUNNER_TEMP/fork-signing.p12"
+
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          printf '%s' "$FORK_MACOS_SIGNING_P12" | base64 --decode > "$certificate"
+          security import "$certificate" -k "$keychain" -P "$FORK_MACOS_SIGNING_PASSWORD" -T /usr/bin/codesign -f pkcs12
+          rm -f "$certificate"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain" > /dev/null
+          existing_keychains=()
+          while IFS= read -r line; do
+            line="${line#"${line%%[![:space:]]*}"}"
+            existing_keychains+=("${line//\"/}")
+          done < <(security list-keychains -d user)
+          security list-keychains -d user -s "$keychain" "${existing_keychains[@]}"
+
+          identity="$(security find-identity -p codesigning "$keychain" | awk '/^ *1\)/ { print $2; exit }')"
+          if [[ -z "$identity" ]]; then
+            echo "::error::The signing certificate has no code signing identity."
+            exit 1
+          fi
+          echo "Signing identity: $identity"
+          {
+            echo "BB_DESKTOP_SIGNING_IDENTITY=$identity"
+            echo "BB_DESKTOP_SIGNING_KEYCHAIN=$keychain"
+          } >> "$GITHUB_ENV"
+
+      - name: Package signed arm64 desktop app
+        env:
+          BB_DESKTOP_UPDATE_REPOSITORY: ${{ github.repository }}
+        run: pnpm exec turbo run desktop:build --filter=@bb/desktop --force --output-logs=new-only
+
+      - name: Verify signature
+        run: |
+          set -euo pipefail
+          identity="$(printf '%s' "$BB_DESKTOP_SIGNING_IDENTITY" | tr '[:upper:]' '[:lower:]')"
+          zip_path="$(ls apps/desktop/release/*-arm64.zip)"
+          extracted="$RUNNER_TEMP/verify-zip"
+          rm -rf "$extracted"
+          mkdir -p "$extracted"
+          ditto -x -k "$zip_path" "$extracted"
+          for app in apps/desktop/release/mac-arm64/bb.app "$extracted/bb.app"; do
+            codesign --verify --deep --strict --verbose=2 "$app"
+            requirement="$(codesign -d -r- "$app" 2>&1 | sed -n 's/^designated => //p')"
+            echo "$app: $requirement"
+            if [[ "$requirement" != *"certificate leaf = H\"$identity\""* ]]; then
+              echo "::error::$app is not signed by the fork identity, so installed builds would refuse it as an update."
+              exit 1
+            fi
+          done
+
+      - name: Smoke test packaged desktop app
+        run: pnpm exec turbo run smoke:packaged --filter=@bb/desktop --force --output-logs=new-only
+
+      - name: Generate desktop version feed
+        run: pnpm --dir apps/desktop run desktop:version-feed
+
+      - name: Publish releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          release_dir="apps/desktop/release"
+          version_tag="desktop-v${VERSION}"
+          latest_tag="desktop-latest"
+          binaries=("$release_dir"/*.dmg "$release_dir"/*.zip "$release_dir"/*.blockmap)
+          feeds=("$release_dir/latest-mac.yml" "$release_dir/desktop-version.json")
+          notes="$RUNNER_TEMP/release-notes.md"
+          zip_name="$(basename "$(ls "$release_dir"/*-arm64.zip)")"
+          cat > "$notes" <<EOF
+          bb desktop ${VERSION} for Apple Silicon Macs, built from ${GITHUB_SHA}.
+
+          Installed fork builds update to this one on their own. To install it on a Mac for the first time, quit bb and run:
+
+          \`\`\`sh
+          rm -rf /tmp/bb-fork-install
+          gh release download ${version_tag} --repo ${GITHUB_REPOSITORY} --pattern '${zip_name}' --dir /tmp/bb-fork-install
+          ditto -x -k /tmp/bb-fork-install/${zip_name} /tmp/bb-fork-install
+          rm -rf /Applications/bb.app && mv /tmp/bb-fork-install/bb.app /Applications/
+          \`\`\`
+          EOF
+
+          if gh release view "$version_tag" > /dev/null 2>&1; then
+            gh release upload "$version_tag" "${binaries[@]}" "${feeds[@]}" --clobber
+          else
+            gh release create "$version_tag" "${binaries[@]}" "${feeds[@]}" \
+              --target "$GITHUB_SHA" \
+              --title "bb desktop ${VERSION}" \
+              --notes-file "$notes" \
+              --latest
+          fi
+
+          if ! gh release view "$latest_tag" > /dev/null 2>&1; then
+            gh release create "$latest_tag" "${binaries[@]}" "${feeds[@]}" \
+              --target "$GITHUB_SHA" \
+              --title "bb desktop latest" \
+              --notes-file "$notes" \
+              --latest=false
+            exit 0
+          fi
+
+          # The feeds name the zip they point at, so the new binaries go up
+          # before the feeds that reference them, and stale binaries come down
+          # last.
+          previous_assets="$(gh release view "$latest_tag" --json assets --jq '.assets[].name')"
+          gh release upload "$latest_tag" "${binaries[@]}" --clobber
+          gh release upload "$latest_tag" "${feeds[@]}" --clobber
+          current_assets=()
+          for asset in "${binaries[@]}" "${feeds[@]}"; do
+            current_assets+=("$(basename "$asset")")
+          done
+          while IFS= read -r asset; do
+            if [[ -n "$asset" && ! " ${current_assets[*]} " == *" $asset "* ]]; then
+              gh release delete-asset "$latest_tag" "$asset" --yes
+            fi
+          done <<< "$previous_assets"
+          gh release edit "$latest_tag" --notes-file "$notes"
+
+      - name: Summarize
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          {
+            echo "## bb desktop ${VERSION}"
+            echo
+            echo "- Signed with identity \`${BB_DESKTOP_SIGNING_IDENTITY}\`"
+            echo "- Release: https://github.com/${GITHUB_REPOSITORY}/releases/tag/desktop-v${VERSION}"
+            echo "- Update feed: https://github.com/${GITHUB_REPOSITORY}/releases/download/desktop-latest/latest-mac.yml"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove signing keychain
+        if: always()
+        run: |
+          if [[ -n "${BB_DESKTOP_SIGNING_KEYCHAIN:-}" ]]; then
+            security delete-keychain "$BB_DESKTOP_SIGNING_KEYCHAIN" || true
+          fi
