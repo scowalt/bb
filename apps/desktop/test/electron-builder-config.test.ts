@@ -147,6 +147,7 @@ const signingEnvironmentKeys = [
   "APPLE_APP_SPECIFIC_PASSWORD",
   "APPLE_ID",
   "APPLE_TEAM_ID",
+  "BB_DESKTOP_SIGNING_IDENTITY",
   "CSC_IDENTITY_AUTO_DISCOVERY",
   "CSC_KEY_PASSWORD",
   "CSC_LINK",
@@ -587,7 +588,7 @@ describe("electron-builder signing config", () => {
     const { config } = await readResolvedConfig({
       BB_DESKTOP_RELEASE_CHANNEL: "nightly",
     });
-    const nightlyRelease = createDesktopReleaseInfo("nightly");
+    const nightlyRelease = createDesktopReleaseInfo("nightly", "get-bb/bb");
 
     expect(config.appId).toBe("dev.bb.desktop.nightly");
     expect(config.productName).toBe("bb Nightly");
@@ -606,6 +607,33 @@ describe("electron-builder signing config", () => {
       provider: "generic",
       url: nightlyRelease.updateReleaseBaseUrl,
     });
+  });
+
+  it("points the updater at another repository's releases when built for a fork", async () => {
+    const { config } = await readResolvedConfig({
+      BB_DESKTOP_UPDATE_REPOSITORY: "scowalt/bb",
+    });
+
+    expect(config.publish[0]).toEqual({
+      channel: "latest",
+      provider: "generic",
+      url: createDesktopReleaseInfo("latest", "scowalt/bb")
+        .updateReleaseBaseUrl,
+    });
+    expect(config.publish[0].url).toBe(
+      "https://github.com/scowalt/bb/releases/download/desktop-latest/",
+    );
+  });
+
+  it("rejects update repositories that are not a GitHub owner/name", async () => {
+    const result = await runConfigScript({
+      BB_DESKTOP_UPDATE_REPOSITORY: "https://github.com/scowalt/bb",
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain(
+      "BB_DESKTOP_UPDATE_REPOSITORY must be a GitHub owner/name",
+    );
   });
 
   it("rejects unknown desktop release channels", async () => {
@@ -634,6 +662,34 @@ describe("electron-builder signing config", () => {
 
     expect(config.mac.identity).toBeNull();
     expect(config.mac.notarize).toBe(false);
+  });
+
+  it("signs with a self-signed identity through the sign hook without notarizing", async () => {
+    const { config } = await readResolvedConfig({
+      BB_DESKTOP_SIGNING_IDENTITY: "54C01811A98BDEE55F2849D5A2D6FC066292BDB2",
+    });
+
+    expect(config.mac.identity).toBe("-");
+    expect(config.mac.sign).toBe("./scripts/sign-with-keychain-identity.cjs");
+    expect(config.mac.notarize).toBe(false);
+    const signHook: unknown = require(String(config.mac.sign));
+    expect(signHook).toBeTypeOf("function");
+  });
+
+  it("rejects a self-signed identity alongside Developer ID secrets", async () => {
+    const result = await runConfigScript({
+      APPLE_APP_SPECIFIC_PASSWORD: "app-password",
+      APPLE_ID: "sawyer@example.com",
+      APPLE_TEAM_ID: "TEAMID1234",
+      BB_DESKTOP_SIGNING_IDENTITY: "bb fork signing",
+      CSC_KEY_PASSWORD: "p12-password",
+      CSC_LINK: "base64-p12",
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain(
+      "BB_DESKTOP_SIGNING_IDENTITY cannot be combined with signing/notarization secrets.",
+    );
   });
 
   it("rejects partial signing secret sets", async () => {
