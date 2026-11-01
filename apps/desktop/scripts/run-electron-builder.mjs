@@ -205,6 +205,7 @@ function resolveElectronBuilderConfig(baseConfig, env, electronBuilderArgs) {
   } else if (signingPlan.mode === "self-signed") {
     mac.identity = "-";
     mac.sign = selfSignedSignHookPath;
+    mac.timestamp = "none";
   } else if (signingPlan.identityName) {
     mac.identity = signingPlan.identityName;
   } else {
