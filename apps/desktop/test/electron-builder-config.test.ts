@@ -671,6 +671,7 @@ describe("electron-builder signing config", () => {
 
     expect(config.mac.identity).toBe("-");
     expect(config.mac.sign).toBe("./scripts/sign-with-keychain-identity.cjs");
+    expect(config.mac.timestamp).toBe("none");
     expect(config.mac.notarize).toBe(false);
     const signHook: unknown = require(String(config.mac.sign));
     expect(signHook).toBeTypeOf("function");

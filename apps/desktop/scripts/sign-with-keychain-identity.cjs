@@ -24,6 +24,5 @@ module.exports = async function signWithKeychainIdentity(options) {
     ...options,
     identity,
     keychain: keychain.length > 0 ? keychain : options.keychain,
-    timestamp: "none",
   });
 };
