@@ -282,3 +282,41 @@ export const launcherToServerMessageSchema = z.discriminatedUnion("channel", [
 export type LauncherToServerMessage = z.infer<
   typeof launcherToServerMessageSchema
 >;
+
+export const BB_APP_RELEASE_REPOSITORY: string | null = "scowalt/bb";
+const BB_APP_LATEST_RELEASE_TAG = "bb-app-latest";
+
+function bbAppReleaseAssetUrl(
+  repository: string,
+  tag: string,
+  asset: string,
+): string {
+  return `https://github.com/${repository}/releases/download/${tag}/${asset}`;
+}
+
+export function bbAppLatestVersionUrl(repository: string): string {
+  return bbAppReleaseAssetUrl(
+    repository,
+    BB_APP_LATEST_RELEASE_TAG,
+    "bb-app-version.json",
+  );
+}
+
+export function bbAppLatestTarballUrl(repository: string): string {
+  return bbAppReleaseAssetUrl(
+    repository,
+    BB_APP_LATEST_RELEASE_TAG,
+    "bb-app.tgz",
+  );
+}
+
+export function bbAppReleaseTarballUrl(
+  repository: string,
+  version: string,
+): string {
+  return bbAppReleaseAssetUrl(
+    repository,
+    `bb-app-v${version}`,
+    `bb-app-${version}.tgz`,
+  );
+}
