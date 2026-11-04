@@ -370,9 +370,10 @@ macOS installs an update only when it is signed by the same identity as the
 running app, so every build must use the same certificate. An ad-hoc signed
 build can never update in place.
 
-The `Fork Desktop Release` workflow (`fork-desktop-release.yml`) runs on every
-push to a fork's `main` and on manual dispatch. It versions each build
-`<upstream version>-fork.<run number>`, signs it with the certificate in the
+The `Fork Release` workflow (`fork-desktop-release.yml`) runs on every push to
+a fork's `main` and on manual dispatch. It versions each build
+`<next upstream patch>-fork.<run number>` with `scripts/prepare-fork-version.mjs`,
+for both the desktop app and `bb-app`, signs it with the certificate in the
 `FORK_MACOS_SIGNING_P12` (base64 `.p12`) and `FORK_MACOS_SIGNING_PASSWORD`
 repository secrets, and publishes it to a `desktop-v<version>` release and the
 moving `desktop-latest` release. Install the first build by hand, using the
@@ -380,6 +381,17 @@ commands in its release notes. `gh release download` does not quarantine the
 download, so Gatekeeper does not block it. A copy downloaded in a browser needs
 `xattr -dr com.apple.quarantine /Applications/bb.app` first. Later builds
 install through the app's own update flow.
+
+The same workflow packs `bb-app` and publishes it to a `bb-app-v<version>`
+release and the moving `bb-app-latest` release, as `bb-app.tgz` plus a
+`bb-app-version.json` feed. `BB_APP_RELEASE_REPOSITORY` in
+`packages/config/src/app-update.ts` names that repository: a bb server's update
+check reads the feed instead of npm, and its in-app updater installs the
+versioned tarball instead of `bb-app@<version>`. `null` restores npm. Install a
+server's first copy with
+`npm install -g --allow-scripts=better-sqlite3,node-pty,@parcel/watcher https://github.com/<owner>/<name>/releases/download/bb-app-latest/bb-app.tgz`.
+Machines enrolled with that server install and update from the server's own
+package, as with npm builds.
 
 ## About panel
 
