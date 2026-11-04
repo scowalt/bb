@@ -13,6 +13,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { BB_APP_RELEASE_REPOSITORY } from "@bb/config/app-update";
 import type { ServerConfig } from "@bb/config/server";
 import { isLoopbackHostname } from "@bb/config/loopback";
 import { toOptionalString } from "@bb/config/strings";
@@ -279,6 +280,7 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
     sourceCommit: serverConfig.BB_APP_SOURCE_COMMIT ?? null,
     config: runtimeConfig,
     logger,
+    releaseRepository: BB_APP_RELEASE_REPOSITORY,
   });
   const appUpdateMode = serverConfig.BB_APP_UPDATE_MODE ?? null;
   const desktopUpdateChannel =
