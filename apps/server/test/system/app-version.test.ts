@@ -57,6 +57,30 @@ describe("createAppVersionService", () => {
     },
   );
 
+  it("checks the fork's bb-app-latest release instead of npm", async () => {
+    const calls: FetchCall[] = [];
+    const service = createAppVersionService({
+      sourceCommit: null,
+      installKind: "npm",
+      config: { appVersion: "0.48.2-fork.4", isDevelopment: false },
+      fetchImpl: createStubFetch(
+        [{ body: { version: "0.48.2-fork.5" } }],
+        calls,
+      ),
+      logger: testLogger,
+      releaseRepository: "scowalt/bb",
+    });
+    const response = await service.getSystemVersion();
+    expect(calls.map((call) => call.url)).toEqual([
+      "https://github.com/scowalt/bb/releases/download/bb-app-latest/bb-app-version.json",
+    ]);
+    expect(response.latestVersion).toBe("0.48.2-fork.5");
+    expect(response.updateAvailable).toBe(true);
+    expect(response.upgradeCommand).toBe(
+      "npm install -g https://github.com/scowalt/bb/releases/download/bb-app-latest/bb-app.tgz",
+    );
+  });
+
   it("reports the source commit without comparing the checkout to npm", async () => {
     const calls: FetchCall[] = [];
     const service = createAppVersionService({

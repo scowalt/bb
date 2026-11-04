@@ -134,6 +134,26 @@ describe("installNpmRevision", () => {
     expect(readdirSync(formatAppUpdateVersionsDir(dataDir))).toEqual(["1.1.0"]);
   });
 
+  it("installs a release repository's tarball instead of the npm package", async () => {
+    const dataDir = scratchDir();
+    const npm = fakeNpm({ installedVersion: "0.48.2-fork.5" });
+
+    await installNpmRevision({
+      dataDir,
+      onLine: () => undefined,
+      onStep: () => undefined,
+      releaseRepository: "scowalt/bb",
+      runner: npm.runner,
+      version: "0.48.2-fork.5",
+    });
+
+    const [install] = npm.calls;
+    expect(install?.args).toContain(
+      "https://github.com/scowalt/bb/releases/download/bb-app-v0.48.2-fork.5/bb-app-0.48.2-fork.5.tgz",
+    );
+    expect(install?.args.some((arg) => arg.startsWith("bb-app@"))).toBe(false);
+  });
+
   it("reuses an intact install without running npm", async () => {
     const dataDir = scratchDir();
     writePackage(formatNpmRevisionPackageRoot(dataDir, "1.1.0"), "1.1.0");

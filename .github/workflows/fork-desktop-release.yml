@@ -1,4 +1,4 @@
-name: Fork Desktop Release
+name: Fork Release
 
 # Builds the macOS arm64 desktop app for a fork of get-bb/bb, signs it with
 # the fork's self-signed certificate, and publishes it to the fork's
@@ -82,22 +82,13 @@ jobs:
       - name: Test desktop
         run: pnpm exec turbo run test --filter=@bb/desktop --force --output-logs=new-only
 
-      # Upstream versions only change on upstream releases, so each build adds
-      # the run number to stay ahead of the build already installed.
+      # Upstream versions only change on upstream releases, so each build is the
+      # next patch's fork.<run number> prerelease: ahead of the build already
+      # installed and of the upstream release it was cut from. bb-app and the
+      # desktop app share the version, as upstream's lockstep requires.
       - name: Set fork version
         id: version
-        run: |
-          set -euo pipefail
-          upstream_version="$(node -p "require('./apps/desktop/package.json').version")"
-          version="${upstream_version%%-*}-fork.${GITHUB_RUN_NUMBER}"
-          node -e '
-            const fs = require("node:fs");
-            const path = "apps/desktop/package.json";
-            const pkg = JSON.parse(fs.readFileSync(path, "utf8"));
-            pkg.version = process.argv[1];
-            fs.writeFileSync(path, JSON.stringify(pkg, null, 2) + "\n");
-          ' "$version"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+        run: echo "version=$(node scripts/prepare-fork-version.mjs)" >> "$GITHUB_OUTPUT"
 
       - name: Import signing certificate
         env:
@@ -244,3 +235,96 @@ jobs:
           if [[ -n "${BB_DESKTOP_SIGNING_KEYCHAIN:-}" ]]; then
             security delete-keychain "$BB_DESKTOP_SIGNING_KEYCHAIN" || true
           fi
+
+  bb-app:
+    name: bb-app release
+    if: github.repository != 'get-bb/bb'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: ${{ env.PNPM_VERSION }}
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --prefer-offline
+
+      - name: Set fork version
+        id: version
+        run: echo "version=$(node scripts/prepare-fork-version.mjs)" >> "$GITHUB_OUTPUT"
+
+      - name: Build, typecheck, and test focused packages
+        run: pnpm exec turbo run typecheck test --filter=@bb/config --filter=@bb/server --filter=bb-app --output-logs=new-only
+
+      - name: Smoke bb-app tarball
+        run: pnpm exec turbo run smoke:tarball --filter=bb-app --force --output-logs=new-only
+
+      - name: Pack bb-app
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          pack_dir="$RUNNER_TEMP/bb-app-release"
+          mkdir -p "$pack_dir"
+          (cd packages/bb-app && npm pack --pack-destination "$pack_dir")
+          test -f "$pack_dir/bb-app-${VERSION}.tgz"
+          cp "$pack_dir/bb-app-${VERSION}.tgz" "$pack_dir/bb-app.tgz"
+          printf '{"version":"%s"}\n' "$VERSION" > "$pack_dir/bb-app-version.json"
+
+      # The version feed names a tarball in the versioned release, so the
+      # tarballs go up before the feed that points at them.
+      - name: Publish releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          pack_dir="$RUNNER_TEMP/bb-app-release"
+          version_tag="bb-app-v${VERSION}"
+          latest_tag="bb-app-latest"
+          notes="$RUNNER_TEMP/bb-app-release-notes.md"
+          cat > "$notes" <<EOF
+          bb-app ${VERSION}, built from ${GITHUB_SHA}.
+
+          bb servers installed from this fork update to new builds on their own. To install it, run:
+
+          \`\`\`sh
+          npm install -g --allow-scripts=better-sqlite3,node-pty,@parcel/watcher https://github.com/${GITHUB_REPOSITORY}/releases/download/${latest_tag}/bb-app.tgz
+          \`\`\`
+          EOF
+
+          if gh release view "$version_tag" > /dev/null 2>&1; then
+            gh release upload "$version_tag" "$pack_dir/bb-app-${VERSION}.tgz" --clobber
+          else
+            gh release create "$version_tag" "$pack_dir/bb-app-${VERSION}.tgz" \
+              --target "$GITHUB_SHA" \
+              --title "bb-app ${VERSION}" \
+              --notes-file "$notes" \
+              --latest=false
+          fi
+
+          if ! gh release view "$latest_tag" > /dev/null 2>&1; then
+            gh release create "$latest_tag" "$pack_dir/bb-app.tgz" "$pack_dir/bb-app-version.json" \
+              --target "$GITHUB_SHA" \
+              --title "bb-app latest" \
+              --notes-file "$notes" \
+              --latest=false
+            exit 0
+          fi
+          gh release upload "$latest_tag" "$pack_dir/bb-app.tgz" --clobber
+          gh release upload "$latest_tag" "$pack_dir/bb-app-version.json" --clobber
+          gh release edit "$latest_tag" --notes-file "$notes"
