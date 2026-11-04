@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
   APP_UPDATE_RESTART_EXIT_CODE,
+  BB_APP_RELEASE_REPOSITORY,
   mutateAppUpdateState,
   readAppUpdateState,
   serverToLauncherMessageSchema,
@@ -186,6 +187,7 @@ export function createLauncherAppUpdateController(
           schedulePush();
         },
         onStep: setStep,
+        releaseRepository: BB_APP_RELEASE_REPOSITORY,
         runner: args.runner,
         signal: abortController.signal,
         version: target.version,
