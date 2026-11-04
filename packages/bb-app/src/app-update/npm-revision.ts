@@ -5,6 +5,7 @@ import { join } from "node:path";
 import semver from "semver";
 import { z } from "zod";
 import {
+  bbAppReleaseTarballUrl,
   formatAppUpdateVersionsDir,
   type NpmAppRevision,
 } from "@bb/config/app-update";
@@ -77,6 +78,7 @@ export interface InstallNpmRevisionArgs {
   dataDir: string;
   onLine: (line: string) => void;
   onStep: (step: string) => void;
+  releaseRepository?: string | null;
   runner: RunCommand;
   signal?: AbortSignal;
   version: string;
@@ -143,7 +145,9 @@ export async function installNpmRevision(
         "--no-audit",
         "--no-fund",
         "--omit=dev",
-        `bb-app@${args.version}`,
+        args.releaseRepository == null
+          ? `bb-app@${args.version}`
+          : bbAppReleaseTarballUrl(args.releaseRepository, args.version),
       ],
       command: npmCommand.command,
       cwd: stagingDir,
