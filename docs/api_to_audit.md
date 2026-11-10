@@ -1203,9 +1203,11 @@ its latest thirty-two turns, in the task's language. The prompt includes the
 current title so the service can keep it; a changed title replaces the current
 one and syncs to providers that support renaming, like a manual rename. When
 no title service is available, generation fails, or the thread has no task
-message, the call fails with the reason and the title is unchanged. Core
-callers: the thread menu's Regenerate title action and
-`bb thread regenerate-title`.
+message, the call fails with the reason and the title is unchanged. A
+regenerated title counts as generated, so the `regenerateTitleOnIdle` general
+setting keeps it current after later turns. Core callers: the thread menu's
+Regenerate title action, `bb thread regenerate-title`, and the
+`regenerateTitleOnIdle` turn follow-up.
 
 Docs: `backend-sdk.md`, `bb guide thread-messaging`.
 
