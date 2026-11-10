@@ -337,6 +337,8 @@ export function registerSystemRoutes(
         current.keepHistoryAfterContextClear,
       summarizeShellCommands:
         settings.summarizeShellCommands ?? current.summarizeShellCommands,
+      regenerateTitleOnIdle:
+        settings.regenerateTitleOnIdle ?? current.regenerateTitleOnIdle,
       confirmThreadArchive:
         settings.confirmThreadArchive ?? current.confirmThreadArchive,
       confirmDesktopQuit:

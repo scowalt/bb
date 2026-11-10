@@ -130,6 +130,7 @@ function useSettingsStoryState() {
   const [keepHistoryAfterContextClear, setKeepHistoryAfterContextClear] =
     useState(false);
   const [summarizeShellCommands, setSummarizeShellCommands] = useState(true);
+  const [regenerateTitleOnIdle, setRegenerateTitleOnIdle] = useState(false);
   const [streamerMode, setStreamerMode] = useState(false);
   const [telemetryEnabled, setTelemetryEnabled] = useState(true);
   const [managedBranchPrefix, setManagedBranchPrefix] = useState(
@@ -158,6 +159,8 @@ function useSettingsStoryState() {
     setKeepHistoryAfterContextClear,
     summarizeShellCommands,
     setSummarizeShellCommands,
+    regenerateTitleOnIdle,
+    setRegenerateTitleOnIdle,
     streamerMode,
     telemetryEnabled,
     setTelemetryEnabled,
@@ -218,6 +221,8 @@ function GeneralSettingsStory({
         }
         summarizeShellCommands={state.summarizeShellCommands}
         onSummarizeShellCommandsChange={state.setSummarizeShellCommands}
+        regenerateTitleOnIdle={state.regenerateTitleOnIdle}
+        onRegenerateTitleOnIdleChange={state.setRegenerateTitleOnIdle}
         desktopBrowserAvailable={desktopBrowserAvailable}
         generalSettingsDisabled={false}
         terminalCopyOnSelect={terminalCopyOnSelect}
