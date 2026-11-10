@@ -180,6 +180,8 @@ interface GeneralSettingsSectionProps {
   onResumeThreadsAfterRestartChange: (enabled: boolean) => void;
   summarizeShellCommands: boolean;
   onSummarizeShellCommandsChange: (enabled: boolean) => void;
+  regenerateTitleOnIdle: boolean;
+  onRegenerateTitleOnIdleChange: (enabled: boolean) => void;
   desktopBrowserAvailable: boolean;
   generalSettingsDisabled: boolean;
   managedBranchPrefix: string;
@@ -882,6 +884,8 @@ export function GeneralSettingsSection({
   onSummarizeShellCommandsChange,
   resumeThreadsAfterRestart,
   onResumeThreadsAfterRestartChange,
+  regenerateTitleOnIdle,
+  onRegenerateTitleOnIdleChange,
   desktopBrowserAvailable,
   generalSettingsDisabled,
   managedBranchPrefix,
@@ -1013,6 +1017,18 @@ export function GeneralSettingsSection({
               disabled={generalSettingsDisabled}
               onCheckedChange={onSummarizeShellCommandsChange}
               aria-label="Summarize shell commands"
+            />
+          </SettingsWithControl>
+
+          <SettingsWithControl
+            label="Regenerate title on thread idle"
+            description="Update a thread's title from the conversation each time a turn finishes."
+          >
+            <Switch
+              checked={regenerateTitleOnIdle}
+              disabled={generalSettingsDisabled}
+              onCheckedChange={onRegenerateTitleOnIdleChange}
+              aria-label="Regenerate title on thread idle"
             />
           </SettingsWithControl>
 
@@ -1484,6 +1500,12 @@ export function SettingsView() {
           onSummarizeShellCommandsChange={(enabled) =>
             updateGeneralSettingsMutation.mutate({
               summarizeShellCommands: enabled,
+            })
+          }
+          regenerateTitleOnIdle={generalSettings.regenerateTitleOnIdle}
+          onRegenerateTitleOnIdleChange={(enabled) =>
+            updateGeneralSettingsMutation.mutate({
+              regenerateTitleOnIdle: enabled,
             })
           }
           onReplaySetupGuide={() =>

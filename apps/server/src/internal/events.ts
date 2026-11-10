@@ -48,7 +48,7 @@ import {
 } from "../services/system/event-pruning.js";
 import {
   executeTurnEndFollowUpBestEffort,
-  idleFollowUpForTurnEnd,
+  idleFollowUpsForTurnEnd,
   planTurnEnd,
   type TurnEndFollowUp,
 } from "../services/threads/turn-end-follow-ups.js";
@@ -452,21 +452,19 @@ async function applyEventEffects(
         });
         const idle =
           ended.disposition === "applied" && outcome.thread?.status === "idle";
-        const idleFollowUp = idle
-          ? idleFollowUpForTurnEnd(plan, {
+        const idleFollowUps = idle
+          ? idleFollowUpsForTurnEnd(plan, {
               status: event.status,
               threadId: entry.threadId,
             })
-          : null;
+          : [];
         if (
           plan.continuation === null ||
           !(idle || ended.disposition === "held")
         ) {
           followUps.push(...plan.parentNotifications);
         }
-        if (idleFollowUp !== null) {
-          followUps.push(idleFollowUp);
-        }
+        followUps.push(...idleFollowUps);
         continue;
       }
 
