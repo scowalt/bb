@@ -26,6 +26,8 @@ function renderSection(overrides?: {
       onKeepHistoryAfterContextClearChange={vi.fn()}
       summarizeShellCommands={true}
       onSummarizeShellCommandsChange={vi.fn()}
+      regenerateTitleOnIdle={false}
+      onRegenerateTitleOnIdleChange={vi.fn()}
       desktopBrowserAvailable={false}
       generalSettingsDisabled={overrides?.generalSettingsDisabled ?? false}
       terminalCopyOnSelect={overrides?.terminalCopyOnSelect ?? true}
