@@ -29,6 +29,7 @@ import {
   runQueuedMessageDispatch,
   type QueuedMessageDispatchWake,
 } from "./queued-message-dispatch.js";
+import { regenerateThreadTitleAfterTurn } from "./title-generation.js";
 import {
   isCommandTimeoutError,
   runtimeErrorLogFields,
@@ -74,10 +75,16 @@ interface EnvironmentDirectoryContinuationFollowUp {
   threadId: string;
 }
 
+interface ThreadTitleRegenerationFollowUp {
+  kind: "thread-title-regeneration";
+  threadId: string;
+}
+
 export type TurnEndFollowUp =
   | EnvironmentDirectoryContinuationFollowUp
   | ParentTurnNotificationFollowUp
-  | QueuedMessageDispatchFollowUp;
+  | QueuedMessageDispatchFollowUp
+  | ThreadTitleRegenerationFollowUp;
 
 function wasTurnManuallyStopped(
   deps: Pick<AppDeps, "db">,
@@ -164,6 +171,9 @@ export async function executeTurnEndFollowUpBestEffort(
         return;
       case "queued-message-dispatch":
         await runQueuedMessageDispatch(deps, followUp.wake);
+        return;
+      case "thread-title-regeneration":
+        regenerateThreadTitleAfterTurn(deps, followUp.threadId);
         return;
       case "environment-directory-continuation": {
         await runQueuedMessageDispatch(deps, {
@@ -278,23 +288,25 @@ export function planTurnEnd(
   return { continuation, parentNotifications };
 }
 
-export function idleFollowUpForTurnEnd(
+export function idleFollowUpsForTurnEnd(
   plan: TurnEndPlan,
   args: { status: HeldTurnCompletionStatus; threadId: string },
-): TurnEndFollowUp | null {
-  if (args.status !== "completed") return null;
-  if (plan.continuation !== null) {
-    return {
-      kind: "environment-directory-continuation",
-      continuation: plan.continuation,
-      parentNotification: plan.parentNotifications[0] ?? null,
-      threadId: args.threadId,
-    };
-  }
-  return {
-    kind: "queued-message-dispatch",
-    wake: { kind: "thread-ready", threadId: args.threadId },
-  };
+): TurnEndFollowUp[] {
+  if (args.status !== "completed") return [];
+  return [
+    plan.continuation !== null
+      ? {
+          kind: "environment-directory-continuation",
+          continuation: plan.continuation,
+          parentNotification: plan.parentNotifications[0] ?? null,
+          threadId: args.threadId,
+        }
+      : {
+          kind: "queued-message-dispatch",
+          wake: { kind: "thread-ready", threadId: args.threadId },
+        },
+    { kind: "thread-title-regeneration", threadId: args.threadId },
+  ];
 }
 
 export async function runReleasedTurnFollowUps(
@@ -317,8 +329,9 @@ export async function runReleasedTurnFollowUps(
     thread,
     turnId: args.turnId,
   });
-  const followUp = idleFollowUpForTurnEnd(plan, args);
-  if (followUp !== null) {
-    await executeTurnEndFollowUpBestEffort(deps, followUp);
-  }
+  await Promise.all(
+    idleFollowUpsForTurnEnd(plan, args).map((followUp) =>
+      executeTurnEndFollowUpBestEffort(deps, followUp),
+    ),
+  );
 }
