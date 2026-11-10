@@ -71,6 +71,7 @@ import {
 } from "./turn-completed-events.js";
 import {
   applyGeneratedThreadTitle,
+  regenerateThreadTitleAfterTurn,
   sanitizeGeneratedTitle,
 } from "../services/threads/title-generation.js";
 import {
@@ -275,10 +276,16 @@ interface EnvironmentDirectoryContinuationFollowUp {
   threadId: string;
 }
 
+interface ThreadTitleRegenerationFollowUp {
+  kind: "thread-title-regeneration";
+  threadId: string;
+}
+
 type EventEffectFollowUp =
   | EnvironmentDirectoryContinuationFollowUp
   | ParentTurnNotificationFollowUp
-  | QueuedMessageDispatchFollowUp;
+  | QueuedMessageDispatchFollowUp
+  | ThreadTitleRegenerationFollowUp;
 
 function isRootTurnStartedEvent(
   event: Extract<HostDaemonEventEnvelope["event"], { type: "turn/started" }>,
@@ -567,25 +574,34 @@ async function applyEventEffects(
             });
           }
         }
-        const idleFollowUp: EventEffectFollowUp | null =
+        const idleFollowUps: EventEffectFollowUp[] =
           event.status !== "completed"
-            ? null
-            : continuation
-              ? {
-                  kind: "environment-directory-continuation",
-                  continuation,
-                  parentNotification: parentNotifications[0] ?? null,
-                  threadId: entry.threadId,
-                }
-              : {
-                  kind: "queued-message-dispatch",
-                  wake: { kind: "thread-ready", threadId: entry.threadId },
-                };
+            ? []
+            : [
+                continuation
+                  ? {
+                      kind: "environment-directory-continuation",
+                      continuation,
+                      parentNotification: parentNotifications[0] ?? null,
+                      threadId: entry.threadId,
+                    }
+                  : {
+                      kind: "queued-message-dispatch",
+                      wake: { kind: "thread-ready", threadId: entry.threadId },
+                    },
+                { kind: "thread-title-regeneration", threadId: entry.threadId },
+              ];
         const transition = applyTurnCompletedEvent(deps, {
           afterIdle:
-            idleFollowUp === null
+            idleFollowUps.length === 0
               ? null
-              : () => executeEventFollowUpBestEffort(deps, idleFollowUp),
+              : async () => {
+                  await Promise.all(
+                    idleFollowUps.map((followUp) =>
+                      executeEventFollowUpBestEffort(deps, followUp),
+                    ),
+                  );
+                },
           payload,
         });
         const idle =
@@ -596,8 +612,8 @@ async function applyEventEffects(
         ) {
           followUps.push(...parentNotifications);
         }
-        if (idle && idleFollowUp !== null) {
-          followUps.push(idleFollowUp);
+        if (idle) {
+          followUps.push(...idleFollowUps);
         }
         continue;
       }
@@ -673,6 +689,9 @@ async function executeEventFollowUpBestEffort(
         return;
       case "queued-message-dispatch":
         await runQueuedMessageDispatch(deps, followUp.wake);
+        return;
+      case "thread-title-regeneration":
+        regenerateThreadTitleAfterTurn(deps, followUp.threadId);
         return;
       case "environment-directory-continuation": {
         await runQueuedMessageDispatch(deps, {
