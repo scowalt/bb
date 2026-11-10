@@ -112,6 +112,12 @@ General. Machine-related keys (`machineServerUrl`, `defaultMachineAccess`,
   commands): false stops titling shell commands that read, list, or search files
   with a summary such as `Searched for X`. Each command row then shows its
   command and expands to the command and its output.
+- `regenerateTitleOnIdle` (default false; Settings → General → Regenerate
+  title on thread idle): true runs `bb thread regenerate-title` after each
+  completed turn. It updates only a title bb generated; a title set by hand
+  (rename, `bb thread update --title`, `bb thread spawn --title`) stays until
+  you run `bb thread regenerate-title` on that thread. Set it with
+  `bb settings general regenerateTitleOnIdle on`.
 - `confirmThreadArchive` (default true): set false to archive parent and child
   threads in the app without the confirmation popup; the toast still offers
   Undo. CLI and SDK archive calls are always non-interactive.
