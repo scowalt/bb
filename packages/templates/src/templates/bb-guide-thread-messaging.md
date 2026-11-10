@@ -81,7 +81,8 @@ Ownership:
   messages, and the agent's latest replies, written in the task's language. It
   replaces the current title, including one set by hand, unless that title
   still fits. The title is kept when no service is available or generation
-  fails, and the error says why. bb never regenerates on its own.
+  fails, and the error says why. bb regenerates on its own only when the
+  `regenerateTitleOnIdle` general setting is on (see `bb guide customization`).
   SDK: `threads.experimental_regenerateTitle({ threadId })`.
 
   bb thread read [id]                      Mark read

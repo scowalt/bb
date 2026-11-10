@@ -1,8 +1,12 @@
 import { renderTemplate } from "@bb/templates";
 import {
+  getAppSettings,
   getThread,
+  getThreadPluginMetadata,
   listStoredTaskTurnRequestEvents,
+  patchThreadPluginMetadata,
   updateThread,
+  type DbConnection,
 } from "@bb/db";
 import {
   removeCommandMentionsFromPromptInput,
@@ -23,6 +27,7 @@ import type { CommandResultSideEffectsDeps } from "../../internal/command-result
 import { parseStoredTurnRequestEvent } from "./thread-events.js";
 import { listLatestTurnFinalAgentReplies } from "./thread-data.js";
 import { syncThreadTitleToProvider } from "./thread-commands.js";
+import { runtimeErrorLogFields } from "../lib/error-log-fields.js";
 
 const MIN_TITLE_GENERATION_WORDS = 5;
 const MAX_GENERATED_TITLE_WIDTH = 48;
@@ -35,6 +40,9 @@ const MAX_TITLE_FOLLOW_UP_WIDTH = 600;
 const TITLE_FOLLOW_UP_LIMIT = 8;
 const MAX_TITLE_AGENT_REPLY_WIDTH = 125;
 const TITLE_AGENT_REPLY_LIMIT = 32;
+const GENERATED_TITLE_METADATA_NAMESPACE = "bb:core/thread-title";
+
+const threadIdsRegeneratingTitleAfterTurn = new Set<string>();
 
 interface ApplyGeneratedThreadTitleArgs {
   threadId: string;
@@ -328,8 +336,34 @@ export function applyGeneratedThreadTitle(
   updateThread(deps.db, deps.hub, args.threadId, {
     title,
   });
+  recordGeneratedThreadTitle(deps.db, args.threadId, title);
 
   return true;
+}
+
+function recordGeneratedThreadTitle(
+  db: DbConnection,
+  threadId: string,
+  title: string,
+): void {
+  patchThreadPluginMetadata(db, {
+    threadId,
+    pluginId: GENERATED_TITLE_METADATA_NAMESPACE,
+    set: { generatedTitle: title },
+    remove: [],
+  });
+}
+
+function hasGeneratedThreadTitle(db: DbConnection, thread: Thread): boolean {
+  if (thread.title === null) {
+    return true;
+  }
+  const { metadata } = getThreadPluginMetadata(
+    db,
+    thread.id,
+    GENERATED_TITLE_METADATA_NAMESPACE,
+  );
+  return metadata.generatedTitle === thread.title;
 }
 
 interface RegenerateThreadTitleArgs {
@@ -421,12 +455,48 @@ export async function regenerateThreadTitle(
     );
   }
   if (title === args.thread.title) {
+    recordGeneratedThreadTitle(deps.db, args.thread.id, title);
     return args.thread;
   }
   const thread = updateThread(deps.db, deps.hub, args.thread.id, { title });
   if (thread === null) {
     throw new ApiError(404, "thread_not_found", "Thread not found");
   }
+  recordGeneratedThreadTitle(deps.db, thread.id, title);
   syncThreadTitleToProvider(deps, thread);
   return thread;
+}
+
+export function regenerateThreadTitleAfterTurn(
+  deps: CommandResultSideEffectsDeps,
+  threadId: string,
+): void {
+  if (
+    !getAppSettings(deps.db).regenerateTitleOnIdle ||
+    threadIdsRegeneratingTitleAfterTurn.has(threadId)
+  ) {
+    return;
+  }
+  const thread = getThread(deps.db, threadId);
+  if (thread === null || !hasGeneratedThreadTitle(deps.db, thread)) {
+    return;
+  }
+  threadIdsRegeneratingTitleAfterTurn.add(threadId);
+  void regenerateThreadTitle(deps, { thread })
+    .catch((error: unknown) => {
+      if (
+        error instanceof ApiError &&
+        (error.body.code === "not_configured" ||
+          error.body.code === "invalid_request")
+      ) {
+        return;
+      }
+      deps.logger.warn(
+        { threadId, ...runtimeErrorLogFields(deps.config, error) },
+        "Failed to regenerate thread title after turn",
+      );
+    })
+    .finally(() => {
+      threadIdsRegeneratingTitleAfterTurn.delete(threadId);
+    });
 }
