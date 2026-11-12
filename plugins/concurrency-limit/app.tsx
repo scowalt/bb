@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import {
   commitGlobalLimitDraft,
   commitHostLimitDraft,
+  formatGigabytes,
   MAX_LIMIT_VALUE,
   type LimitDraftCommit,
 } from "./limits.js";
@@ -21,6 +22,7 @@ type ConfigurationInput = Pick<
   ConfigurationView,
   "globalLimit" | "hostOverrides"
 >;
+type HostView = ConfigurationView["hosts"][number];
 type SaveState = "idle" | "saving" | "saved" | "error";
 
 const CONFIGURATION_CHANGED_CHANNEL = "configuration-changed";
@@ -28,6 +30,24 @@ const GLOBAL_FIELD = "global";
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function hostSubtitle(host: HostView): string {
+  const processors =
+    host.availableParallelism === null
+      ? null
+      : `${host.availableParallelism} processors`;
+  if (host.status === "disconnected") {
+    return processors === null ? "Offline" : `${processors} · Offline`;
+  }
+  if (processors === null) return "Detecting processors…";
+  if (host.headroom === null) return processors;
+  return [
+    processors,
+    `${formatGigabytes(host.headroom.memoryAvailableBytes)} free`,
+    `CPU ${Math.round(host.headroom.cpuPressure)}%`,
+    `memory ${Math.round(host.headroom.memoryPressure)}%`,
+  ].join(" · ");
 }
 
 function draftsFor(view: ConfigurationView): Record<string, string> {
@@ -178,7 +198,9 @@ function ConcurrencyLimitSettings() {
       <div className="border-t border-border/60 pt-4">
         <h3 className="text-sm font-medium text-foreground">Host limits</h3>
         <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-          Auto allows one thread per available processor.
+          Auto starts threads while a host has free memory and low CPU and
+          memory pressure. A host that does not report pressure allows one
+          thread per available processor.
         </p>
 
         <div className="ml-2 mt-2 border-l border-border/60 pl-2">
@@ -198,13 +220,7 @@ function ConcurrencyLimitSettings() {
                       {host.name}
                     </div>
                     <div className="text-xs text-muted-foreground">
-                      {host.status === "disconnected"
-                        ? host.availableParallelism === null
-                          ? "Offline"
-                          : `${host.availableParallelism} processors · Offline`
-                        : host.availableParallelism === null
-                          ? "Detecting processors…"
-                          : `${host.availableParallelism} processors`}
+                      {hostSubtitle(host)}
                     </div>
                   </div>
                   <Input
@@ -215,7 +231,11 @@ function ConcurrencyLimitSettings() {
                     inputMode="numeric"
                     max={MAX_LIMIT_VALUE}
                     min={0}
-                    placeholder={`Auto (${host.automaticLimit})`}
+                    placeholder={
+                      host.headroom === null
+                        ? `Auto (${host.automaticLimit})`
+                        : "Auto"
+                    }
                     step={1}
                     type="number"
                     value={drafts[host.id] ?? ""}

@@ -7,6 +7,7 @@ const app = await loadPluginApp(() => import("./app"));
 
 afterEach(cleanup);
 
+const GIBIBYTE = 2 ** 30;
 const hosts = [
   {
     id: "host-a",
@@ -16,6 +17,7 @@ const hosts = [
     automaticLimit: 8,
     effectiveLimit: 8,
     override: null,
+    headroom: null,
   },
   {
     id: "host-b",
@@ -25,6 +27,24 @@ const hosts = [
     automaticLimit: 1,
     effectiveLimit: 1,
     override: null,
+    headroom: null,
+  },
+  {
+    id: "host-c",
+    name: "Beelink",
+    status: "connected" as const,
+    availableParallelism: 20,
+    automaticLimit: 20,
+    effectiveLimit: null,
+    override: null,
+    headroom: {
+      memoryAvailableBytes: 70 * GIBIBYTE,
+      memoryReserveBytes: Math.round(9.2 * GIBIBYTE),
+      cpuPressure: 13.49,
+      memoryPressure: 0,
+      admitting: true,
+      reason: null,
+    },
   },
 ];
 
@@ -81,7 +101,9 @@ describe("Concurrency limit settings", () => {
 
     expect(await slot.findByText("Host limits")).toBeTruthy();
     expect(
-      slot.getByText("Auto allows one thread per available processor."),
+      slot.getByText(
+        "Auto starts threads while a host has free memory and low CPU and memory pressure. A host that does not report pressure allows one thread per available processor.",
+      ),
     ).toBeTruthy();
     expect(slot.getByText("8 processors")).toBeTruthy();
     expect(slot.getByText("Offline")).toBeTruthy();
@@ -90,6 +112,14 @@ describe("Concurrency limit settings", () => {
         .getByRole("spinbutton", { name: "Laptop thread limit" })
         .getAttribute("placeholder"),
     ).toBe("Auto (8)");
+    expect(
+      slot.getByText("20 processors · 70.0 GB free · CPU 13% · memory 0%"),
+    ).toBeTruthy();
+    expect(
+      slot
+        .getByRole("spinbutton", { name: "Beelink thread limit" })
+        .getAttribute("placeholder"),
+    ).toBe("Auto");
   });
 
   it("saves overall and per-host limits without accepting invalid numbers", async () => {
