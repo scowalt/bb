@@ -92,6 +92,7 @@ async function setup(options: SetupOptions = {}) {
     },
     experimental_callHostRpc: () => ({
       availableParallelism: options.detectedParallelism ?? 8,
+      load: null,
     }),
   });
   if (options.configuration !== undefined) {
