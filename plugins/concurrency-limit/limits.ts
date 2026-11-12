@@ -1,4 +1,18 @@
+import type { HostLoad } from "./contract.js";
+
 export const MAX_LIMIT_VALUE = 10_000;
+
+const GIBIBYTE = 2 ** 30;
+
+export const HEADROOM_POLICY = {
+  minimumReserveBytes: 2 * GIBIBYTE,
+  reserveFraction: 0.1,
+  startingThreadBytes: GIBIBYTE,
+  startingWindowMs: 30_000,
+  cpuPressureLimit: 50,
+  memoryPressureLimit: 10,
+  sampleMaxAgeMs: 30_000,
+} as const;
 
 export interface HostLimitOverride {
   readonly hostId: string;
@@ -10,10 +24,27 @@ export interface LimitConfiguration {
   readonly hostOverrides: readonly HostLimitOverride[];
 }
 
-export interface ResolvedHostLimit {
-  readonly limit: number;
-  readonly mode: "automatic" | "override";
+export interface HostLoadSample extends HostLoad {
+  readonly sampledAt: number;
 }
+
+export interface HostCapacity {
+  readonly availableParallelism: number;
+  readonly load: HostLoadSample | null;
+}
+
+export type HostPolicy =
+  | { readonly mode: "override"; readonly limit: number }
+  | { readonly mode: "processors"; readonly limit: number }
+  | { readonly mode: "headroom"; readonly sample: HostLoadSample };
+
+export type HeadroomVerdict =
+  | { readonly kind: "admit" }
+  | {
+      readonly kind: "hold";
+      readonly signal: "memory" | "cpu-pressure" | "memory-pressure";
+      readonly detail: string;
+    };
 
 export function parseLimitValue(raw: string): number | null {
   if (!/^\d+$/u.test(raw)) return null;
@@ -28,20 +59,76 @@ export function automaticHostLimit(
   return availableParallelism;
 }
 
-export function resolveHostLimit(
+export function resolveHostPolicy(
   configuration: LimitConfiguration,
   hostId: string,
-  availableParallelism: number | null,
-): ResolvedHostLimit {
+  capacity: HostCapacity | undefined,
+  now: number,
+): HostPolicy {
   const override = configuration.hostOverrides.find(
     (candidate) => candidate.hostId === hostId,
   );
-  return override === undefined
-    ? {
-        limit: automaticHostLimit(availableParallelism),
-        mode: "automatic",
-      }
-    : { limit: override.limit, mode: "override" };
+  if (override !== undefined) {
+    return { mode: "override", limit: override.limit };
+  }
+  const sample = capacity?.load ?? null;
+  if (
+    sample !== null &&
+    now - sample.sampledAt <= HEADROOM_POLICY.sampleMaxAgeMs
+  ) {
+    return { mode: "headroom", sample };
+  }
+  return {
+    mode: "processors",
+    limit: automaticHostLimit(capacity?.availableParallelism ?? null),
+  };
+}
+
+export function memoryReserveBytes(memoryTotalBytes: number): number {
+  return Math.max(
+    HEADROOM_POLICY.minimumReserveBytes,
+    Math.round(memoryTotalBytes * HEADROOM_POLICY.reserveFraction),
+  );
+}
+
+export function formatGigabytes(bytes: number): string {
+  return `${(bytes / GIBIBYTE).toFixed(1)} GB`;
+}
+
+export function headroomVerdict(
+  sample: HostLoadSample,
+  startingThreads: number,
+): HeadroomVerdict {
+  const memoryPressure = Math.round(sample.memoryPressure.avg10);
+  if (memoryPressure >= HEADROOM_POLICY.memoryPressureLimit) {
+    return {
+      kind: "hold",
+      signal: "memory-pressure",
+      detail: `Memory pressure ${memoryPressure}% (limit ${HEADROOM_POLICY.memoryPressureLimit}%)`,
+    };
+  }
+  const cpuPressure = Math.round(sample.cpuPressure.avg60);
+  if (cpuPressure >= HEADROOM_POLICY.cpuPressureLimit) {
+    return {
+      kind: "hold",
+      signal: "cpu-pressure",
+      detail: `CPU pressure ${cpuPressure}% (limit ${HEADROOM_POLICY.cpuPressureLimit}%)`,
+    };
+  }
+  const reserve = memoryReserveBytes(sample.memoryTotalBytes);
+  const charged = (startingThreads + 1) * HEADROOM_POLICY.startingThreadBytes;
+  if (sample.memoryAvailableBytes - charged < reserve) {
+    const starting =
+      startingThreads === 0
+        ? ""
+        : `, ${startingThreads} ${startingThreads === 1 ? "thread" : "threads"} just started`;
+    return {
+      kind: "hold",
+      signal: "memory",
+      detail: `${formatGigabytes(sample.memoryAvailableBytes)} free, ${formatGigabytes(reserve)} kept in reserve${starting}`,
+    };
+  }
+  return { kind: "admit" };
 }
 
 interface LimitConfigurationInput {

@@ -7,9 +7,12 @@ import {
   createFakePluginHost,
   makeHostResponse,
   makeMessageDispatchHookContext,
+  makeQueueEntry,
   makeThreadResponse,
+  type ExperimentalFakeHostRpcCall,
 } from "@get-bb/plugin-sdk/testing";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { HostLoad } from "./contract.js";
 import plugin from "./server.js";
 
 type RunningThread = Awaited<
@@ -29,6 +32,17 @@ function isHostChangedSubscription(
 }
 
 const PLUGIN_ID = "concurrency-limit";
+const GIBIBYTE = 2 ** 30;
+
+function hostLoad(overrides: Partial<HostLoad> = {}): HostLoad {
+  return {
+    memoryTotalBytes: 92 * GIBIBYTE,
+    memoryAvailableBytes: 70 * GIBIBYTE,
+    cpuPressure: { avg10: 8.09, avg60: 13.49 },
+    memoryPressure: { avg10: 0, avg60: 0 },
+    ...overrides,
+  };
+}
 function hostRecord(
   id: string,
   status: "connected" | "disconnected" = "connected",
@@ -39,6 +53,14 @@ function hostRecord(
 
 function running(overrides: Partial<RunningThread> = {}): RunningThread {
   return { id: "thr_running", hostId: "host-a", ...overrides };
+}
+
+function hangUntilTimeout(call: ExperimentalFakeHostRpcCall): Promise<never> {
+  return new Promise((_, reject) => {
+    const fail = () => reject(new Error("Host plugin call timed out"));
+    setTimeout(fail, call.timeoutMs ?? 30_000);
+    call.signal?.addEventListener("abort", fail, { once: true });
+  });
 }
 
 interface GateContextOverrides {
@@ -73,6 +95,8 @@ interface SetupOptions {
   hosts?: HostResponse[] | (() => HostResponse[]);
   running?: RunningThread[];
   detectedParallelism?: number;
+  detectedLoad?: HostLoad | null | (() => HostLoad | null);
+  callHostRpc?: (call: ExperimentalFakeHostRpcCall) => unknown;
   subscribe?: BbPluginApi["sdk"]["subscribe"];
 }
 
@@ -90,10 +114,15 @@ async function setup(options: SetupOptions = {}) {
       },
       threads: { listRunning: async () => options.running ?? [] },
     },
-    experimental_callHostRpc: () => ({
-      availableParallelism: options.detectedParallelism ?? 8,
-      load: null,
-    }),
+    experimental_callHostRpc:
+      options.callHostRpc ??
+      (() => ({
+        availableParallelism: options.detectedParallelism ?? 8,
+        load:
+          typeof options.detectedLoad === "function"
+            ? options.detectedLoad()
+            : (options.detectedLoad ?? null),
+      })),
   });
   if (options.configuration !== undefined) {
     await fake.bb.storage.kv.set("configuration", options.configuration);
@@ -167,6 +196,7 @@ describe("configuration", () => {
             automaticLimit: 8,
             effectiveLimit: 8,
             override: null,
+            headroom: null,
           },
           {
             id: "host-b",
@@ -176,6 +206,7 @@ describe("configuration", () => {
             automaticLimit: 16,
             effectiveLimit: 16,
             override: null,
+            headroom: null,
           },
         ],
       },
@@ -472,6 +503,332 @@ describe("message.dispatch", () => {
         }),
       ),
     ).resolves.toEqual({ action: "proceed" });
+  });
+});
+
+describe("headroom", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  async function sampledSetup(options: SetupOptions) {
+    const context = await setup({
+      hosts: [hostRecord("host-a")],
+      detectedParallelism: 2,
+      ...options,
+    });
+    const service = context.harness.behavior.runService("capacity-detector");
+    await vi.waitFor(() => {
+      expect(context.harness.experimental_hostRpcCalls.length).toBeGreaterThan(
+        0,
+      );
+    });
+    return { ...context, service };
+  }
+
+  async function stopService(service: {
+    controller: AbortController;
+    done: Promise<void>;
+  }) {
+    service.controller.abort();
+    await service.done;
+  }
+
+  it("admits a turn while the host has headroom, even past one thread per processor", async () => {
+    const { hook, service } = await sampledSetup({
+      detectedLoad: hostLoad(),
+      running: [
+        running({ id: "a" }),
+        running({ id: "b" }),
+        running({ id: "c" }),
+      ],
+    });
+
+    await expect(hook(dispatchContext())).resolves.toEqual({
+      action: "proceed",
+    });
+    await stopService(service);
+  });
+
+  it.each([
+    [
+      "CPU pressure",
+      hostLoad({ cpuPressure: { avg10: 70, avg60: 63.2 } }),
+      "CPU pressure 63% (limit 50%) on host host-a",
+    ],
+    [
+      "memory pressure",
+      hostLoad({ memoryPressure: { avg10: 14.4, avg60: 3 } }),
+      "Memory pressure 14% (limit 10%) on host host-a",
+    ],
+    [
+      "low free memory",
+      hostLoad({ memoryAvailableBytes: Math.round(8.2 * GIBIBYTE) }),
+      "8.2 GB free, 9.2 GB kept in reserve on host host-a",
+    ],
+  ])("holds a turn on %s", async (_signal, load, reason) => {
+    const { hook, service } = await sampledSetup({ detectedLoad: load });
+
+    await expect(hook(dispatchContext())).resolves.toEqual({
+      action: "wait",
+      reason,
+    });
+    await stopService(service);
+  });
+
+  it("charges each admitted turn against free memory until the window passes", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-11-12T10:00:00Z"));
+    const { hook, service } = await sampledSetup({
+      detectedLoad: hostLoad({
+        memoryAvailableBytes: Math.round(12.2 * GIBIBYTE),
+      }),
+    });
+
+    for (const id of ["thr_1", "thr_2", "thr_3"]) {
+      await expect(hook(dispatchContext({ thread: { id } }))).resolves.toEqual({
+        action: "proceed",
+      });
+    }
+    await expect(
+      hook(dispatchContext({ thread: { id: "thr_4" } })),
+    ).resolves.toEqual({
+      action: "wait",
+      reason:
+        "12.2 GB free, 9.2 GB kept in reserve, 3 threads just started on host host-a",
+    });
+
+    await vi.advanceTimersByTimeAsync(31_000);
+    await expect(
+      hook(dispatchContext({ thread: { id: "thr_4" } })),
+    ).resolves.toEqual({
+      action: "proceed",
+    });
+    await stopService(service);
+  });
+
+  it("charges a thread once however many passes admit it, and not at all once another plugin holds it", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-11-12T10:00:00Z"));
+    const { harness, hook, service } = await sampledSetup({
+      detectedLoad: hostLoad({
+        memoryAvailableBytes: Math.round(12.2 * GIBIBYTE),
+      }),
+    });
+    const held = {
+      action: "wait",
+      reason:
+        "12.2 GB free, 9.2 GB kept in reserve, 3 threads just started on host host-a",
+    };
+
+    for (const id of [
+      "thr_draft",
+      "thr_draft",
+      "thr_draft",
+      "thr_2",
+      "thr_3",
+    ]) {
+      await expect(hook(dispatchContext({ thread: { id } }))).resolves.toEqual({
+        action: "proceed",
+      });
+    }
+    await expect(
+      hook(dispatchContext({ thread: { id: "thr_4" } })),
+    ).resolves.toEqual(held);
+
+    await harness.behavior.emitThreadEvent("message.queued", {
+      entry: makeQueueEntry({
+        threadId: "thr_draft",
+        waitingOn: { kind: "plugin", pluginId: "drafts", reason: "Draft" },
+      }),
+    });
+    await expect(
+      hook(dispatchContext({ thread: { id: "thr_4" } })),
+    ).resolves.toEqual({ action: "proceed" });
+
+    await harness.behavior.emitThreadEvent("message.queued", {
+      entry: makeQueueEntry({
+        threadId: "thr_2",
+        waitingOn: { kind: "thread-busy" },
+      }),
+    });
+    await expect(
+      hook(dispatchContext({ thread: { id: "thr_5" } })),
+    ).resolves.toEqual(held);
+    await stopService(service);
+  });
+
+  it("falls back to one thread per processor when the sample is stale", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-11-12T10:00:00Z"));
+    const { hook, service } = await sampledSetup({
+      detectedLoad: hostLoad(),
+      running: [running({ id: "a" }), running({ id: "b" })],
+    });
+    await stopService(service);
+
+    await expect(hook(dispatchContext())).resolves.toEqual({
+      action: "proceed",
+    });
+    await vi.advanceTimersByTimeAsync(31_000);
+    await expect(hook(dispatchContext())).resolves.toEqual({
+      action: "wait",
+      reason: "2 of 2 running on host host-a",
+    });
+  });
+
+  it("falls back to one thread per processor when the host reports no load", async () => {
+    const { hook, service } = await sampledSetup({
+      detectedLoad: null,
+      running: [running({ id: "a" }), running({ id: "b" })],
+    });
+
+    await expect(hook(dispatchContext())).resolves.toEqual({
+      action: "wait",
+      reason: "2 of 2 running on host host-a",
+    });
+    await stopService(service);
+  });
+
+  it("lets a host override win over headroom", async () => {
+    const { hook, service } = await sampledSetup({
+      configuration: {
+        globalLimit: null,
+        hostOverrides: [{ hostId: "host-a", limit: 1 }],
+      },
+      detectedLoad: hostLoad(),
+      running: [running({ id: "a" })],
+    });
+
+    await expect(hook(dispatchContext())).resolves.toEqual({
+      action: "wait",
+      reason: "1 of 1 running on host host-a",
+    });
+    await stopService(service);
+  });
+
+  it("rechecks held turns when a later sample shows headroom and stays quiet otherwise", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-11-12T10:00:00Z"));
+    let load = hostLoad({ cpuPressure: { avg10: 90, avg60: 80 } });
+    const { harness, hook, service } = await sampledSetup({
+      detectedLoad: () => load,
+    });
+    const rechecksAfterSampling = harness.recheckCount;
+    const signalsAfterSampling = harness.realtimeSignals.length;
+
+    await expect(hook(dispatchContext())).resolves.toMatchObject({
+      action: "wait",
+    });
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(harness.experimental_hostRpcCalls).toHaveLength(2);
+    expect(harness.recheckCount).toBe(rechecksAfterSampling);
+
+    load = hostLoad();
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(harness.experimental_hostRpcCalls).toHaveLength(3);
+    expect(harness.recheckCount).toBe(rechecksAfterSampling + 1);
+    expect(harness.realtimeSignals).toHaveLength(signalsAfterSampling);
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(harness.recheckCount).toBe(rechecksAfterSampling + 1);
+    await stopService(service);
+  });
+
+  it("rechecks turns held at one per processor once a fresh sample returns", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-11-12T10:00:00Z"));
+    let sampling = true;
+    const { harness, hook, service } = await sampledSetup({
+      detectedLoad: () => {
+        if (!sampling) throw new Error("Host plugin call timed out");
+        return hostLoad();
+      },
+      running: [running({ id: "a" }), running({ id: "b" })],
+    });
+
+    sampling = false;
+    await vi.advanceTimersByTimeAsync(31_000);
+    await expect(hook(dispatchContext())).resolves.toEqual({
+      action: "wait",
+      reason: "2 of 2 running on host host-a",
+    });
+    const rechecksWhileStale = harness.recheckCount;
+
+    sampling = true;
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(harness.recheckCount).toBe(rechecksWhileStale + 1);
+    await expect(hook(dispatchContext())).resolves.toEqual({
+      action: "proceed",
+    });
+    await stopService(service);
+  });
+
+  it("keeps a healthy host's sample fresh while another host's worker hangs", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-11-12T10:00:00Z"));
+    const { hook, service } = await sampledSetup({
+      hosts: [hostRecord("host-a"), hostRecord("host-b")],
+      callHostRpc: (call) =>
+        call.hostId === "host-b"
+          ? hangUntilTimeout(call)
+          : { availableParallelism: 2, load: hostLoad() },
+      running: [running({ id: "a" }), running({ id: "b" })],
+    });
+
+    for (let elapsed = 0; elapsed < 120_000; elapsed += 5_000) {
+      await vi.advanceTimersByTimeAsync(5_000);
+      await expect(hook(dispatchContext())).resolves.toEqual({
+        action: "proceed",
+      });
+    }
+    await stopService(service);
+  });
+
+  it("does not poll a host that reports no load", async () => {
+    vi.useFakeTimers();
+    const { harness, service } = await sampledSetup({ detectedLoad: null });
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(harness.experimental_hostRpcCalls).toHaveLength(1);
+    await stopService(service);
+  });
+
+  it("shows the headroom verdict in the configuration view and the CLI", async () => {
+    const { harness, service } = await sampledSetup({
+      hosts: [hostRecord("host-a", "connected", "Beelink")],
+      detectedParallelism: 20,
+      detectedLoad: hostLoad(),
+    });
+
+    await expect(
+      harness.behavior.callRpc("getConfiguration"),
+    ).resolves.toMatchObject({
+      hosts: [
+        {
+          id: "host-a",
+          availableParallelism: 20,
+          automaticLimit: 20,
+          effectiveLimit: null,
+          override: null,
+          headroom: {
+            memoryAvailableBytes: 70 * GIBIBYTE,
+            memoryReserveBytes: Math.round(9.2 * GIBIBYTE),
+            cpuPressure: 13.49,
+            memoryPressure: 0,
+            admitting: true,
+            reason: null,
+          },
+        },
+      ],
+    });
+    const status = await harness.behavior.runCli(["status"]);
+    expect(status.stdout.split("\n")).toEqual([
+      "Overall: unlimited",
+      "Automatic host limit: starts threads while the host has free memory and low CPU and memory pressure; hosts that do not report pressure allow one thread per processor",
+      "Beelink: auto, by headroom: admitting (20 processors, 70.0 GB free, 9.2 GB reserve, CPU pressure 13%, memory pressure 0%, connected)",
+    ]);
+    await stopService(service);
   });
 });
 

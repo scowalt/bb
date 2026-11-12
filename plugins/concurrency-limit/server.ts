@@ -6,14 +6,22 @@ import {
   type BbPluginApi,
   type MessageDispatchHookDecision,
   type PluginThreadEventName,
+  type PluginThreadEventPayloads,
 } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { concurrencyLimitHostContract } from "./contract.js";
 import {
   automaticHostLimit,
+  formatGigabytes,
+  HEADROOM_POLICY,
+  headroomVerdict,
   MAX_LIMIT_VALUE,
+  memoryReserveBytes,
   parseLimitValue,
-  resolveHostLimit,
+  resolveHostPolicy,
+  type HostCapacity,
+  type HostLoadSample,
+  type HostPolicy,
   type LimitConfiguration,
 } from "./limits.js";
 
@@ -22,6 +30,8 @@ const CAPACITIES_KEY = "host-capacities";
 const CONFIGURATION_CHANGED_CHANNEL = "configuration-changed";
 const RETRY_MIN_MS = 1_000;
 const RETRY_MAX_MS = 30_000;
+const LOAD_POLL_MS = 5_000;
+const CAPACITY_CALL_TIMEOUT_MS = 10_000;
 export const MAX_REASON_LENGTH = 200;
 
 const JSON_OPTION = {
@@ -63,22 +73,33 @@ const capacityRecordSchema = z
   })
   .strict();
 const capacityRecordsSchema = z.array(capacityRecordSchema).max(256);
+const percentSchema = z.number().min(0).max(100);
+const headroomViewSchema = z
+  .object({
+    memoryAvailableBytes: z.number().int().nonnegative(),
+    memoryReserveBytes: z.number().int().positive(),
+    cpuPressure: percentSchema,
+    memoryPressure: percentSchema,
+    admitting: z.boolean(),
+    reason: z.string().nullable(),
+  })
+  .strict();
+const hostViewSchema = z
+  .object({
+    id: z.string().min(1),
+    name: z.string(),
+    status: z.enum(["connected", "disconnected"]),
+    availableParallelism: z.number().int().positive().nullable(),
+    automaticLimit: limitSchema,
+    effectiveLimit: limitSchema.nullable(),
+    override: limitSchema.nullable(),
+    headroom: headroomViewSchema.nullable(),
+  })
+  .strict();
 const hostConfigurationSchema = z
   .object({
     ...configurationShape,
-    hosts: z.array(
-      z
-        .object({
-          id: z.string().min(1),
-          name: z.string(),
-          status: z.enum(["connected", "disconnected"]),
-          availableParallelism: z.number().int().positive().nullable(),
-          automaticLimit: limitSchema,
-          effectiveLimit: limitSchema,
-          override: limitSchema.nullable(),
-        })
-        .strict(),
-    ),
+    hosts: z.array(hostViewSchema),
   })
   .strict();
 
@@ -95,7 +116,16 @@ export const concurrencyLimitRpcContract = defineRpcContract({
 
 type Configuration = z.infer<typeof configurationSchema>;
 type CapacityRecord = z.infer<typeof capacityRecordSchema>;
+type HostView = z.infer<typeof hostViewSchema>;
+type HeadroomView = z.infer<typeof headroomViewSchema>;
 type RefreshOutcome = "settled" | "retry";
+type WakeReason = "requested" | "retry" | "poll" | "aborted";
+interface Admission {
+  readonly hostId: string;
+  readonly admittedAt: number;
+}
+type QueuedWait =
+  PluginThreadEventPayloads["message.queued"]["entry"]["waitingOn"];
 
 const DEFAULT_CONFIGURATION: Configuration = {
   globalLimit: null,
@@ -120,11 +150,14 @@ function normalizeConfiguration(
   };
 }
 
-function waitDecision(
+function fullDecision(
   limit: number,
   scopeLabel: string,
 ): MessageDispatchHookDecision {
-  const reason = `${limit} of ${limit} running on ${scopeLabel}`;
+  return waitDecision(`${limit} of ${limit} running on ${scopeLabel}`);
+}
+
+function waitDecision(reason: string): MessageDispatchHookDecision {
   return {
     action: "wait",
     reason:
@@ -136,6 +169,14 @@ function waitDecision(
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function turnKeptRunning(waitingOn: QueuedWait): boolean {
+  return (
+    waitingOn === null ||
+    waitingOn.kind === "thread-busy" ||
+    waitingOn.kind === "turn-starting"
+  );
 }
 
 function parseLimitArgument(
@@ -168,22 +209,43 @@ function setHostOverride(
   });
 }
 
-function formatHostLine(host: {
-  name: string;
-  status: "connected" | "disconnected";
-  availableParallelism: number | null;
-  effectiveLimit: number;
-  override: number | null;
-}): string {
-  const source =
-    host.override === null
-      ? `auto, ${host.effectiveLimit}`
-      : String(host.override);
+function headroomView(
+  sample: HostLoadSample,
+  startingThreads: number,
+): HeadroomView {
+  const verdict = headroomVerdict(sample, startingThreads);
+  return {
+    memoryAvailableBytes: sample.memoryAvailableBytes,
+    memoryReserveBytes: memoryReserveBytes(sample.memoryTotalBytes),
+    cpuPressure: sample.cpuPressure.avg60,
+    memoryPressure: sample.memoryPressure.avg10,
+    admitting: verdict.kind === "admit",
+    reason: verdict.kind === "admit" ? null : verdict.detail,
+  };
+}
+
+function formatHostLine(host: HostView): string {
   const processors =
     host.availableParallelism === null
       ? "processors unknown"
       : `${host.availableParallelism} processors`;
-  return `${host.name}: ${source} (${processors}, ${host.status})`;
+  if (host.override !== null) {
+    return `${host.name}: ${host.override} (${processors}, ${host.status})`;
+  }
+  if (host.headroom === null) {
+    return `${host.name}: auto, ${host.automaticLimit} (${processors}, ${host.status})`;
+  }
+  const state = host.headroom.admitting
+    ? "admitting"
+    : `holding, ${host.headroom.reason}`;
+  return [
+    `${host.name}: auto, by headroom: ${state} (${processors}`,
+    `${formatGigabytes(host.headroom.memoryAvailableBytes)} free`,
+    `${formatGigabytes(host.headroom.memoryReserveBytes)} reserve`,
+    `CPU pressure ${Math.round(host.headroom.cpuPressure)}%`,
+    `memory pressure ${Math.round(host.headroom.memoryPressure)}%`,
+    `${host.status})`,
+  ].join(", ");
 }
 
 export default async function concurrencyLimitPlugin(
@@ -201,32 +263,63 @@ export default async function concurrencyLimitPlugin(
   const storedCapacities = capacityRecordsSchema.safeParse(
     await bb.storage.kv.get<unknown>(CAPACITIES_KEY),
   );
-  const capacities = new Map<string, number>(
+  const capacities = new Map<string, HostCapacity>(
     (storedCapacities.success ? storedCapacities.data : []).map((record) => [
       record.hostId,
-      record.availableParallelism,
+      { availableParallelism: record.availableParallelism, load: null },
     ]),
   );
+  const admissions = new Map<string, Admission>();
+  const heldOnHeadroom = new Set<string>();
+
+  function startingCount(hostId: string, now: number): number {
+    let count = 0;
+    for (const [threadId, admission] of admissions) {
+      if (now - admission.admittedAt >= HEADROOM_POLICY.startingWindowMs) {
+        admissions.delete(threadId);
+      } else if (admission.hostId === hostId) {
+        count += 1;
+      }
+    }
+    return count;
+  }
+
+  function policyModes(now: number): Map<string, HostPolicy["mode"]> {
+    return new Map(
+      [...capacities].map(([hostId, capacity]) => [
+        hostId,
+        resolveHostPolicy(configuration, hostId, capacity, now).mode,
+      ]),
+    );
+  }
+
+  function loadHostIds(): string[] {
+    return [...capacities]
+      .filter(([, capacity]) => capacity.load !== null)
+      .map(([hostId]) => hostId);
+  }
 
   async function readConfiguration() {
     const availableHosts = await bb.sdk.hosts.list();
+    const now = Date.now();
     return {
       ...configuration,
-      hosts: availableHosts.map(({ id, name, status }) => {
-        const availableParallelism = capacities.get(id) ?? null;
-        const resolved = resolveHostLimit(
-          configuration,
-          id,
-          availableParallelism,
-        );
+      hosts: availableHosts.map(({ id, name, status }): HostView => {
+        const capacity = capacities.get(id);
+        const availableParallelism = capacity?.availableParallelism ?? null;
+        const policy = resolveHostPolicy(configuration, id, capacity, now);
         return {
           id,
           name,
           status,
           availableParallelism,
           automaticLimit: automaticHostLimit(availableParallelism),
-          effectiveLimit: resolved.limit,
-          override: resolved.mode === "override" ? resolved.limit : null,
+          effectiveLimit: policy.mode === "headroom" ? null : policy.limit,
+          override: policy.mode === "override" ? policy.limit : null,
+          headroom:
+            policy.mode === "headroom"
+              ? headroomView(policy.sample, startingCount(id, now))
+              : null,
         };
       }),
     };
@@ -242,9 +335,9 @@ export default async function concurrencyLimitPlugin(
 
   async function persistCapacities(): Promise<void> {
     const records: CapacityRecord[] = [...capacities]
-      .map(([hostId, availableParallelism]) => ({
+      .map(([hostId, capacity]) => ({
         hostId,
-        availableParallelism,
+        availableParallelism: capacity.availableParallelism,
       }))
       .sort((left, right) => left.hostId.localeCompare(right.hostId));
     await bb.storage.kv.set(CAPACITIES_KEY, records);
@@ -270,7 +363,7 @@ export default async function concurrencyLimitPlugin(
       name: "concurrency-limit",
       summary: "Configure global and per-host thread limits",
       description:
-        "A limit holds new turns in line until a running thread goes idle. The automatic host limit is one thread per available processor.",
+        "A limit holds new turns in line until a running thread goes idle. The automatic host limit starts threads while the host has free memory and low CPU and memory pressure; a host that does not report pressure allows one thread per processor.",
       commands: {
         status: cliCommand({
           summary: "Show effective concurrency limits",
@@ -283,7 +376,7 @@ export default async function concurrencyLimitPlugin(
                 ? JSON.stringify(view)
                 : [
                     `Overall: ${view.globalLimit === null ? "unlimited" : view.globalLimit}`,
-                    "Automatic host limit: one thread per available processor",
+                    "Automatic host limit: starts threads while the host has free memory and low CPU and memory pressure; hosts that do not report pressure allow one thread per processor",
                     ...view.hosts.map(formatHostLine),
                   ].join("\n"),
             };
@@ -378,6 +471,7 @@ export default async function concurrencyLimitPlugin(
     hostIds: ReadonlySet<string>,
   ): Promise<RefreshOutcome> {
     try {
+      const modesBefore = policyModes(Date.now());
       const availableHosts = await bb.sdk.hosts.list({ signal });
       let changed = false;
       if (refreshAll) {
@@ -390,36 +484,60 @@ export default async function concurrencyLimitPlugin(
         }
       }
       let retry = false;
-      const targets = availableHosts.filter(
-        (availableHost) =>
-          availableHost.status === "connected" &&
-          (refreshAll || hostIds.has(availableHost.id)),
+      const requested = availableHosts.filter(
+        (availableHost) => refreshAll || hostIds.has(availableHost.id),
       );
+      for (const offlineHost of requested) {
+        if (offlineHost.status === "connected") continue;
+        const previous = capacities.get(offlineHost.id);
+        if (previous === undefined || previous.load === null) continue;
+        capacities.set(offlineHost.id, { ...previous, load: null });
+        changed = true;
+      }
       await Promise.all(
-        targets.map(async (availableHost) => {
-          try {
-            const result = await hostClient.call("getCapacity", null, {
-              hostId: availableHost.id,
-              signal,
-            });
-            if (
-              capacities.get(availableHost.id) !== result.availableParallelism
-            ) {
-              capacities.set(availableHost.id, result.availableParallelism);
-              changed = true;
+        requested
+          .filter((availableHost) => availableHost.status === "connected")
+          .map(async (availableHost) => {
+            try {
+              const result = await hostClient.call("getCapacity", null, {
+                hostId: availableHost.id,
+                signal,
+                timeoutMs: CAPACITY_CALL_TIMEOUT_MS,
+              });
+              const previous = capacities.get(availableHost.id);
+              const load =
+                result.load === null
+                  ? null
+                  : { ...result.load, sampledAt: Date.now() };
+              capacities.set(availableHost.id, {
+                availableParallelism: result.availableParallelism,
+                load,
+              });
+              if (
+                previous === undefined ||
+                previous.availableParallelism !== result.availableParallelism ||
+                (previous.load === null) !== (load === null)
+              ) {
+                changed = true;
+              }
+            } catch (error) {
+              if (signal.aborted) return;
+              retry = true;
+              bb.log.warn(
+                `Could not detect capacity for host ${availableHost.id}: ${errorMessage(error)}`,
+              );
             }
-          } catch (error) {
-            if (signal.aborted) return;
-            retry = true;
-            bb.log.warn(
-              `Could not detect capacity for host ${availableHost.id}: ${errorMessage(error)}`,
-            );
-          }
-        }),
+          }),
+      );
+      const released = releaseHeldHosts();
+      const policyChanged = [...policyModes(Date.now())].some(
+        ([hostId, mode]) => modesBefore.get(hostId) !== mode,
       );
       if (changed) {
         await persistCapacities();
         bb.realtime.publish(CONFIGURATION_CHANGED_CHANNEL, {});
+      }
+      if (changed || released || policyChanged) {
         await bb.experimental_hooks.recheck("message.dispatch");
       }
       return retry ? "retry" : "settled";
@@ -433,21 +551,45 @@ export default async function concurrencyLimitPlugin(
     }
   }
 
+  function releaseHeldHosts(): boolean {
+    const now = Date.now();
+    let released = false;
+    for (const hostId of [...heldOnHeadroom]) {
+      const policy = resolveHostPolicy(
+        configuration,
+        hostId,
+        capacities.get(hostId),
+        now,
+      );
+      if (
+        policy.mode === "headroom" &&
+        headroomVerdict(policy.sample, startingCount(hostId, now)).kind ===
+          "hold"
+      ) {
+        continue;
+      }
+      heldOnHeadroom.delete(hostId);
+      released = true;
+    }
+    return released;
+  }
+
   function waitForRefresh(
     signal: AbortSignal,
     retryDelayMs: number | null,
-  ): Promise<"requested" | "retry" | "aborted"> {
+    pollDelayMs: number | null,
+  ): Promise<WakeReason> {
     if (signal.aborted) return Promise.resolve("aborted");
     if (refreshAllRequested || requestedHostIds.size > 0) {
       return Promise.resolve("requested");
     }
     return new Promise((resolve) => {
-      let timer: ReturnType<typeof setTimeout> | null = null;
+      const timers: ReturnType<typeof setTimeout>[] = [];
       let settled = false;
-      const finish = (reason: "requested" | "retry" | "aborted"): void => {
+      const finish = (reason: WakeReason): void => {
         if (settled) return;
         settled = true;
-        if (timer !== null) clearTimeout(timer);
+        for (const timer of timers) clearTimeout(timer);
         if (wakeWaiter === wake) wakeWaiter = null;
         signal.removeEventListener("abort", abort);
         resolve(reason);
@@ -457,7 +599,10 @@ export default async function concurrencyLimitPlugin(
       wakeWaiter = wake;
       signal.addEventListener("abort", abort, { once: true });
       if (retryDelayMs !== null) {
-        timer = setTimeout(() => finish("retry"), retryDelayMs);
+        timers.push(setTimeout(() => finish("retry"), retryDelayMs));
+      }
+      if (pollDelayMs !== null) {
+        timers.push(setTimeout(() => finish("poll"), pollDelayMs));
       }
     });
   }
@@ -486,6 +631,7 @@ export default async function concurrencyLimitPlugin(
         },
       });
       let retryMs = RETRY_MIN_MS;
+      let retryDueAt: number | null = null;
       try {
         while (!signal.aborted) {
           const refreshAll = refreshAllRequested;
@@ -494,16 +640,25 @@ export default async function concurrencyLimitPlugin(
           requestedHostIds.clear();
           const outcome = await refreshCapacities(signal, refreshAll, hostIds);
           if (signal.aborted) break;
+          if (outcome === "retry") {
+            retryDueAt ??= Date.now() + retryMs;
+          } else if (refreshAll) {
+            retryMs = RETRY_MIN_MS;
+            retryDueAt = null;
+          }
           if (refreshAllRequested || requestedHostIds.size > 0) continue;
+          const pollHostIds = loadHostIds();
           const wakeReason = await waitForRefresh(
             signal,
-            outcome === "retry" ? retryMs : null,
+            retryDueAt === null ? null : Math.max(0, retryDueAt - Date.now()),
+            pollHostIds.length === 0 ? null : LOAD_POLL_MS,
           );
           if (wakeReason === "retry") {
+            retryDueAt = null;
             refreshAllRequested = true;
             retryMs = Math.min(retryMs * 2, RETRY_MAX_MS);
-          } else if (outcome === "settled") {
-            retryMs = RETRY_MIN_MS;
+          } else if (wakeReason === "poll") {
+            for (const hostId of pollHostIds) requestedHostIds.add(hostId);
           }
         }
       } finally {
@@ -520,6 +675,10 @@ export default async function concurrencyLimitPlugin(
       await bb.experimental_hooks.recheck("message.dispatch");
     });
   }
+
+  bb.events.on("message.queued", ({ entry }) => {
+    if (!turnKeptRunning(entry.waitingOn)) admissions.delete(entry.threadId);
+  });
 
   bb.experimental_hooks.on("message.dispatch", async (context) => {
     if (
@@ -540,19 +699,33 @@ export default async function concurrencyLimitPlugin(
       configuration.globalLimit !== null &&
       running.length >= configuration.globalLimit
     ) {
-      return waitDecision(configuration.globalLimit, "all hosts");
+      return fullDecision(configuration.globalLimit, "all hosts");
     }
 
     if (host !== null) {
-      const resolved = resolveHostLimit(
+      const label = host.name.trim() === "" ? host.id : host.name;
+      const now = Date.now();
+      const policy = resolveHostPolicy(
         configuration,
         host.id,
-        capacities.get(host.id) ?? null,
+        capacities.get(host.id),
+        now,
       );
-      const onHost = running.filter((thread) => thread.hostId === host.id);
-      if (onHost.length >= resolved.limit) {
-        const label = host.name.trim() === "" ? host.id : host.name;
-        return waitDecision(resolved.limit, `host ${label}`);
+      if (policy.mode === "headroom") {
+        const verdict = headroomVerdict(
+          policy.sample,
+          startingCount(host.id, now),
+        );
+        if (verdict.kind === "hold") {
+          heldOnHeadroom.add(host.id);
+          return waitDecision(`${verdict.detail} on host ${label}`);
+        }
+        admissions.set(context.thread.id, { hostId: host.id, admittedAt: now });
+      } else {
+        const onHost = running.filter((thread) => thread.hostId === host.id);
+        if (onHost.length >= policy.limit) {
+          return fullDecision(policy.limit, `host ${label}`);
+        }
       }
     }
 

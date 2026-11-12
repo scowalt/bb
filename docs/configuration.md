@@ -1305,9 +1305,11 @@ defaults on; `bb pool routing <claude|codex> --off` stops it. See the
 ### Concurrency limit
 
 The builtin Concurrency limit plugin caps running threads. The overall limit is
-unlimited by default; each host defaults to Auto (one thread per available
-processor), a blank host field restores Auto, and `0` pauses new work for that
-scope. Configure it on its autosaving plugin page or with
+unlimited by default; each host defaults to Auto, a blank host field restores
+Auto, and `0` pauses new work for that scope. Auto starts threads while a host
+has free memory and low CPU and memory pressure, read from Linux pressure stall
+information; a host that does not report it allows one thread per available
+processor. Configure it on its autosaving plugin page or with
 `bb concurrency-limit status|global|host`; see the `concurrency-limit` skill.
 
 ### GitHub Star
