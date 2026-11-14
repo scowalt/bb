@@ -17,6 +17,7 @@ import {
 import {
   countWords,
   displayWidth,
+  sliceUtf16HeadAndTail,
   truncateToWidth,
   truncateToWidthAtWordBoundary,
 } from "@bb/text-utils";
@@ -35,11 +36,11 @@ const MAX_TITLE_FALLBACK_WIDTH = 80;
 const MAX_TITLE_PROMPT_WIDTH = 4000;
 const ELLIPSIS = "...";
 const MAX_BRANCH_SLUG_LENGTH = 48;
-const MAX_TITLE_TASK_WIDTH = 2000;
-const MAX_TITLE_FOLLOW_UP_WIDTH = 600;
-const TITLE_FOLLOW_UP_LIMIT = 8;
-const MAX_TITLE_AGENT_REPLY_WIDTH = 125;
-const TITLE_AGENT_REPLY_LIMIT = 32;
+const MAX_TITLE_FOLLOW_UP_WIDTH = 800;
+const TITLE_FOLLOW_UP_LIMIT = 30;
+const TITLE_AGENT_REPLY_HEAD_CHARS = 120;
+const TITLE_AGENT_REPLY_TAIL_CHARS = 400;
+const TITLE_AGENT_REPLY_LIMIT = 30;
 const GENERATED_TITLE_METADATA_NAMESPACE = "bb:core/thread-title";
 
 const threadIdsRegeneratingTitleAfterTurn = new Set<string>();
@@ -71,13 +72,17 @@ export interface ThreadMetadataGenerationOutcome {
   reason?: ThreadMetadataGenerationOutcomeReason;
 }
 
+function normalizeWhitespace(text: string): string {
+  return text.replace(/\s+/gu, " ").trim();
+}
+
 function cleanPromptText(input: PromptInput[]): string {
-  return input
-    .filter((part) => part.type === "text")
-    .map((part) => part.text.trim())
-    .join(" ")
-    .replace(/\s+/gu, " ")
-    .trim();
+  return normalizeWhitespace(
+    input
+      .filter((part) => part.type === "text")
+      .map((part) => part.text.trim())
+      .join(" "),
+  );
 }
 
 function clampToWidth(text: string, maxWidth: number): string {
@@ -199,17 +204,25 @@ function titlePromptText(input: PromptInput[]): string {
   return body.length > 0 ? body : cleanPromptText(input);
 }
 
-function formatListItems(
-  texts: readonly string[],
-  maxWidth: number,
-): string | null {
-  const lines = texts.flatMap((text) => {
-    const normalized = text.replace(/\s+/gu, " ").trim();
-    return normalized.length > 0
-      ? [`- ${clampToWidth(normalized, maxWidth)}`]
-      : [];
-  });
+function formatListItems(texts: readonly string[]): string | null {
+  const lines = texts.flatMap((text) => (text.length > 0 ? [`- ${text}`] : []));
   return lines.length > 0 ? lines.join("\n") : null;
+}
+
+function clipAgentReply(reply: string): string {
+  const text = normalizeWhitespace(reply);
+  if (
+    text.length <=
+    TITLE_AGENT_REPLY_HEAD_CHARS + TITLE_AGENT_REPLY_TAIL_CHARS
+  ) {
+    return text;
+  }
+  const { head, tail } = sliceUtf16HeadAndTail(
+    text,
+    TITLE_AGENT_REPLY_HEAD_CHARS,
+    TITLE_AGENT_REPLY_TAIL_CHARS,
+  );
+  return `${head.trimEnd()} … ${tail.trimStart()}`;
 }
 
 interface ThreadTitlePromptContext {
@@ -226,13 +239,8 @@ function renderThreadTitlePrompt(
     return null;
   }
   const commands = collectInvokedPromptCommands(input);
-  const hasLaterMessages =
-    context.followUps !== null || context.agentReplies !== null;
   return renderTemplate("generateThreadMetadata", {
-    cleanedPrompt: clampToWidth(
-      titlePromptText(input),
-      hasLaterMessages ? MAX_TITLE_TASK_WIDTH : MAX_TITLE_PROMPT_WIDTH,
-    ),
+    cleanedPrompt: clampToWidth(titlePromptText(input), MAX_TITLE_PROMPT_WIDTH),
     ...(commands.length > 0
       ? { invokedCommands: formatInvokedCommands(commands) }
       : {}),
@@ -265,14 +273,12 @@ function buildThreadTitleRegenerationPrompt(
   context: ThreadTitleRegenerationContext,
 ): string | null {
   return renderThreadTitlePrompt(context.task, {
-    agentReplies: formatListItems(
-      context.agentReplies,
-      MAX_TITLE_AGENT_REPLY_WIDTH,
-    ),
+    agentReplies: formatListItems(context.agentReplies.map(clipAgentReply)),
     currentTitle: context.currentTitle,
     followUps: formatListItems(
-      context.followUps.map(cleanPromptText),
-      MAX_TITLE_FOLLOW_UP_WIDTH,
+      context.followUps.map((followUp) =>
+        clampToWidth(cleanPromptText(followUp), MAX_TITLE_FOLLOW_UP_WIDTH),
+      ),
     ),
   });
 }
