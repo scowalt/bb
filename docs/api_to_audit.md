@@ -1271,11 +1271,13 @@ Docs: `backend-sdk.md`.
 ## `bb.sdk.threads.experimental_regenerateTitle`
 
 `POST /threads/:id/title/regenerate` asks the thread-title AI service for a new
-title built from the thread's first task message, up to eight of its latest
-user messages, and the first 125 columns of the agent's final reply in each of
-its latest thirty-two turns, in the task's language. The prompt includes the
-current title so the service can keep it; a changed title replaces the current
-one and syncs to providers that support renaming, like a manual rename. When
+title built from the thread's first task message, up to thirty of its latest
+user messages, and the agent's final reply in each of its latest thirty turns,
+in the task's language. A reply longer than 520 characters is cut to its first
+120 and last 400. The prompt asks for the thread's main subject across all of
+the user's messages and includes the current title, which the service keeps
+unless it is wrong, misleading, or too vague; a changed title replaces the
+current one and syncs to providers that support renaming, like a manual rename. When
 no title service is available, generation fails, or the thread has no task
 message, the call fails with the reason and the title is unchanged. A
 regenerated title counts as generated, so the `regenerateTitleOnIdle` general
