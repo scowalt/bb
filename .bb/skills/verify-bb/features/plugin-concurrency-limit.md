@@ -22,7 +22,7 @@ SKILL.md. Inspect nested `--help` before selecting flags and IDs.
 
 | Feature | Drive | Observable success |
 | --- | --- | --- |
-| Automatic, global, and per-host limits | Inspect automatic values, set a small global cap and a host override, then restore defaults. | Effective limit follows the configured global/host policy and processor-derived automatic value. |
+| Automatic, global, and per-host limits | Inspect automatic values, set a small global cap and a host override, then restore defaults. | Effective limit follows the configured global/host policy. A Linux host with pressure stall information shows headroom (free memory, reserve, pressures) and no fixed automatic limit; other hosts show the processor-derived value. |
 | Queued admission | Start more idle-thread turns than the cap permits; finish one admitted turn. | Excess starts wait; the next eligible turn begins when capacity is released. |
 | Steering an active turn | Steer an already active thread while the cap is full. | Existing active work accepts steering without requiring a second concurrency slot. |
 | Release and recovery | Finish, error, stop, and archive synthetic active threads; reconnect a host. | Admission is rechecked without leaked slots or duplicate starts. |
@@ -39,4 +39,4 @@ External account changes use authorized disposable targets.
 
 ## Maintenance notes
 
-- Use Settings → Concurrency limit. The global UI control is labeled Overall thread limit. Global unlimited is null; host auto uses availableParallelism. The per-host effectiveLimit field remains the host cap while globalLimit is enforced separately. Source: `plugins/concurrency-limit/app.tsx:1`.
+- Use Settings → Concurrency limit. The global UI control is labeled Overall thread limit. Global unlimited is null. Host auto follows headroom (`headroom` non-null, `effectiveLimit` null, placeholder `Auto`) when the host returned a load sample in the last 30 seconds, and otherwise uses availableParallelism (placeholder `Auto (N)`). Load samples live only in server memory, so after a server restart a host is on processors until its first sample. The per-host effectiveLimit field remains the host cap while globalLimit is enforced separately. Thresholds are the `HEADROOM_POLICY` constants in `plugins/concurrency-limit/limits.ts`. Source: `plugins/concurrency-limit/app.tsx:1`, `plugins/concurrency-limit/server.ts:1`.
