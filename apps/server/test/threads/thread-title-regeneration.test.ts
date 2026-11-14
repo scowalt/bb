@@ -248,7 +248,7 @@ describe("thread title regeneration", () => {
         target: { kind: "thread-start" },
         input: textInput("Draft the release notes for version two"),
       });
-      for (let index = 1; index <= 12; index += 1) {
+      for (let index = 1; index <= 34; index += 1) {
         seedTurnRequest(harness, {
           threadId: thread.id,
           sequence: index + 1,
@@ -275,13 +275,45 @@ describe("thread title regeneration", () => {
       expect(prompt).toContain(
         "- Follow-up number 5 for the release\n- Follow-up number 6",
       );
-      expect(prompt).toContain("- Follow-up number 12 for the release");
+      expect(prompt).toContain("- Follow-up number 34 for the release");
       expect(prompt).not.toContain("Follow-up number 4 ");
       expect(prompt).toContain(
-        "- Reply number 9 about the release\n- Reply number 10",
+        "- Reply number 11 about the release\n- Reply number 12",
       );
       expect(prompt).toContain("- Reply number 40 about the release");
-      expect(prompt).not.toContain("Reply number 8 ");
+      expect(prompt).not.toContain("Reply number 10 ");
+    });
+  });
+
+  it("sends the opening and the ending of a long agent reply", async () => {
+    completeTitle.mockResolvedValue("Fix the flaky upload test");
+    await withTitleService(async (harness) => {
+      const thread = seedTitledThread(harness, "Investigate upload failures");
+      seedTurnRequest(harness, {
+        threadId: thread.id,
+        sequence: 1,
+        initiator: "user",
+        target: { kind: "thread-start" },
+        input: textInput("Find out why the upload test fails on CI"),
+      });
+      const opening = "Opening of the reply. ";
+      const middle = "middle-detail ".repeat(100);
+      const ending =
+        "Root cause: the upload test raced the storage mock, now awaited.";
+      seedAgentReply(harness, {
+        threadId: thread.id,
+        turnId: "turn-1",
+        sequence: 2,
+        text: `${opening}${middle}${ending}`,
+      });
+
+      expect((await regenerate(harness, thread.id)).status).toBe(200);
+
+      const prompt = sentPrompt();
+      expect(prompt).toContain(`- ${opening}middle-detail`);
+      expect(prompt).toContain(` … `);
+      expect(prompt).toContain(`${ending}\n`);
+      expect(prompt).not.toContain(middle.trim());
     });
   });
 
