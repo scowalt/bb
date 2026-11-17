@@ -32,17 +32,26 @@ import {
 import { GithubFaviconIcon } from "./GithubFaviconIcon";
 import {
   MERGE_ACTIONS,
+  openPullRequestUrl,
   PullRequestSummaryLabel,
 } from "./PullRequestContextSegment";
-import { useEnvironmentPullRequest, usePullRequestActions } from "./queries";
+import {
+  useEarlierPullRequests,
+  useEnvironmentPullRequest,
+  usePullRequestActions,
+} from "./queries";
 
-export interface PullRequestRowHandlers {
+export interface PullRequestRowActions {
   isPending: boolean;
-  onOpen(): void;
-  onCopyLink(): void;
   onMarkReady(): void;
   onMarkDraft(): void;
   onMerge(method: PullRequestMergeMethod): void;
+}
+
+export interface PullRequestRowHandlers {
+  onOpen(): void;
+  onCopyLink(): void;
+  actions: PullRequestRowActions | null;
 }
 
 function PullRequestRowMenu({
@@ -52,6 +61,7 @@ function PullRequestRowMenu({
   pullRequest: PullRequest;
   handlers: PullRequestRowHandlers;
 }) {
+  const actions = handlers.actions;
   const canMerge =
     pullRequest.state === "open" &&
     pullRequest.mergeability.state === "mergeable";
@@ -95,15 +105,15 @@ function PullRequestRowMenu({
           <Icon name="Link" />
           Copy link
         </DropdownMenuItem>
-        {canMerge ? (
+        {actions !== null && canMerge ? (
           <>
             <DropdownMenuSeparator />
             {MERGE_ACTIONS.map((action) => (
               <DropdownMenuItem
                 key={action.method}
                 textValue={action.label}
-                disabled={handlers.isPending}
-                onSelect={() => handlers.onMerge(action.method)}
+                disabled={actions.isPending}
+                onSelect={() => actions.onMerge(action.method)}
               >
                 <Icon name="GitMerge" />
                 {action.label}
@@ -111,14 +121,14 @@ function PullRequestRowMenu({
             ))}
           </>
         ) : null}
-        {canChangeStatus ? (
+        {actions !== null && canChangeStatus ? (
           <>
             <DropdownMenuSeparator />
             {pullRequest.state === "draft" ? (
               <DropdownMenuItem
                 textValue="Mark ready for review"
-                disabled={handlers.isPending}
-                onSelect={handlers.onMarkReady}
+                disabled={actions.isPending}
+                onSelect={actions.onMarkReady}
               >
                 <Icon name="GitPullRequestArrow" />
                 Mark ready for review
@@ -126,8 +136,8 @@ function PullRequestRowMenu({
             ) : (
               <DropdownMenuItem
                 textValue="Convert to draft"
-                disabled={handlers.isPending}
-                onSelect={handlers.onMarkDraft}
+                disabled={actions.isPending}
+                onSelect={actions.onMarkDraft}
               >
                 <Icon name="GitPullRequestDraft" />
                 Convert to draft
@@ -173,6 +183,16 @@ export function PullRequestContextCardRowView({
   );
 }
 
+function linkHandlers(
+  navigate: ReturnType<typeof useBbNavigate>,
+  pullRequest: PullRequest,
+): Omit<PullRequestRowHandlers, "actions"> {
+  return {
+    onOpen: () => openPullRequestUrl(navigate, pullRequest.url),
+    onCopyLink: () => void copyToClipboard({ text: pullRequest.url }),
+  };
+}
+
 function PullRequestRow({
   environmentId,
   pullRequest,
@@ -186,17 +206,24 @@ function PullRequestRow({
     <PullRequestContextCardRowView
       pullRequest={pullRequest}
       handlers={{
-        isPending: actions.isPending,
-        onOpen: () => {
-          if (!navigate.openUrl(pullRequest.url)) {
-            window.open(pullRequest.url, "_blank", "noopener,noreferrer");
-          }
+        ...linkHandlers(navigate, pullRequest),
+        actions: {
+          isPending: actions.isPending,
+          onMarkReady: () => void actions.markReady(),
+          onMarkDraft: () => void actions.markDraft(),
+          onMerge: (method) => void actions.merge(method),
         },
-        onCopyLink: () => void copyToClipboard({ text: pullRequest.url }),
-        onMarkReady: () => void actions.markReady(),
-        onMarkDraft: () => void actions.markDraft(),
-        onMerge: (method) => void actions.merge(method),
       }}
+    />
+  );
+}
+
+function EarlierPullRequestRow({ pullRequest }: { pullRequest: PullRequest }) {
+  const navigate = useBbNavigate();
+  return (
+    <PullRequestContextCardRowView
+      pullRequest={pullRequest}
+      handlers={{ ...linkHandlers(navigate, pullRequest), actions: null }}
     />
   );
 }
@@ -207,8 +234,17 @@ export function PullRequestContextCardRow({
   const show = useSettings().values?.[SHOW_PULL_REQUEST_SETTING] === true;
   const environmentId = show ? (environment?.id ?? null) : null;
   const { pullRequest } = useEnvironmentPullRequest(environmentId);
+  const earlier = useEarlierPullRequests(environmentId, pullRequest);
   if (environmentId === null || pullRequest === null) return null;
   return (
-    <PullRequestRow environmentId={environmentId} pullRequest={pullRequest} />
+    <>
+      <PullRequestRow environmentId={environmentId} pullRequest={pullRequest} />
+      {earlier.map((earlierPullRequest) => (
+        <EarlierPullRequestRow
+          key={earlierPullRequest.url}
+          pullRequest={earlierPullRequest}
+        />
+      ))}
+    </>
   );
 }
