@@ -96,6 +96,8 @@ export default experimental_defineHostEntry({
         refs: view.refs,
       }));
     },
+    urlViews: ({ reads }) =>
+      readPullRequests(reads.map(({ path, url }) => prepareUrlRead(url, path))),
     upstream: ({ path }) => readRefs(path),
     act({ path, url, action }) {
       return runPullRequestAction({ cwd: path, url, action });
