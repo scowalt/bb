@@ -593,12 +593,14 @@ const CARD_PULL_REQUESTS: readonly {
 ];
 
 const CARD_HANDLERS = {
-  isPending: false,
   onOpen: noop,
   onCopyLink: noop,
-  onMarkReady: noop,
-  onMarkDraft: noop,
-  onMerge: noop,
+  actions: {
+    isPending: false,
+    onMarkReady: noop,
+    onMarkDraft: noop,
+    onMerge: noop,
+  },
 };
 
 export function ContextCardRow() {

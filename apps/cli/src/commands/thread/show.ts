@@ -23,6 +23,7 @@ import {
 } from "@bb/thread-view";
 import { BbHttpError, type BbSdk } from "@bb/sdk";
 import {
+  environmentPullRequestHistorySchema,
   environmentPullRequestSchema,
   type PullRequest,
 } from "bb-plugin-bb--github-pr-status/contract";
@@ -92,6 +93,7 @@ interface ThreadShowJsonPayload extends ThreadStatusPayload {
 interface ThreadShowPullRequestPayload {
   status: "available" | "none" | "unavailable";
   pullRequest: PullRequest | null;
+  earlierPullRequests: PullRequest[];
   message?: string;
 }
 
@@ -154,10 +156,44 @@ async function fetchGitDiff(args: {
   return { available: false, message: environmentDiff.failure.message };
 }
 
+async function fetchEarlierPullRequests(args: {
+  environmentId: string;
+  sdk: BbSdk;
+  current: PullRequest | null;
+}): Promise<PullRequest[]> {
+  try {
+    const rows = await args.sdk.plugins.callRpc({
+      pluginId: GITHUB_PR_STATUS_PLUGIN_ID,
+      method: "pullRequestHistory",
+      input: { keys: [args.environmentId] },
+      outputSchema: z.record(z.string(), environmentPullRequestHistorySchema),
+    });
+    return (rows[args.environmentId]?.pullRequests ?? []).filter(
+      (pullRequest) => pullRequest.url !== args.current?.url,
+    );
+  } catch {
+    return [];
+  }
+}
+
 async function fetchPullRequest(args: {
   environmentId: string;
   sdk: BbSdk;
 }): Promise<FetchedPullRequest> {
+  const current = await fetchCurrentPullRequest(args);
+  return {
+    ...current,
+    earlierPullRequests: await fetchEarlierPullRequests({
+      ...args,
+      current: current.pullRequest,
+    }),
+  };
+}
+
+async function fetchCurrentPullRequest(args: {
+  environmentId: string;
+  sdk: BbSdk;
+}): Promise<Omit<FetchedPullRequest, "earlierPullRequests">> {
   try {
     const rows = await args.sdk.plugins.callRpc({
       pluginId: GITHUB_PR_STATUS_PLUGIN_ID,
@@ -204,6 +240,7 @@ function threadShowEnvironmentJson(
     pullRequest: pullRequest ?? {
       status: "unavailable",
       pullRequest: null,
+      earlierPullRequests: [],
       message: "Pull request lookup was not run.",
     },
   };
@@ -676,7 +713,19 @@ function printEnvironmentPullRequest(
   if (!pullRequest) {
     return;
   }
+  printCurrentPullRequest(pullRequest);
+  if (pullRequest.earlierPullRequests.length === 0) {
+    return;
+  }
+  console.log("    Earlier pull requests:");
+  for (const pr of pullRequest.earlierPullRequests) {
+    console.log(
+      `      #${pr.number} ${pr.state} - ${pr.title} (${pr.headRefName}) ${pr.url}`,
+    );
+  }
+}
 
+function printCurrentPullRequest(pullRequest: FetchedPullRequest): void {
   if (pullRequest.status === "unavailable") {
     console.log("    Pull request: unavailable");
     if (pullRequest.message) {

@@ -41,8 +41,15 @@ import {
   PULL_REQUEST_STATE_DISPLAY,
 } from "./display";
 import { PullRequestNextStepLabel } from "./PullRequestNextStepLabel";
-import { PullRequestStatusPill } from "./PullRequestStatusPill";
-import { useEnvironmentPullRequest, usePullRequestActions } from "./queries";
+import {
+  PullRequestStateIcon,
+  PullRequestStatusPill,
+} from "./PullRequestStatusPill";
+import {
+  useEarlierPullRequests,
+  useEnvironmentPullRequest,
+  usePullRequestActions,
+} from "./queries";
 
 const CHANGED_FILES_SEGMENT_KEY = "bb--git/changed-files";
 
@@ -127,6 +134,70 @@ export function PullRequestLink({
         />
       ) : null}
     </a>
+  );
+}
+
+export function openPullRequestUrl(
+  navigate: ReturnType<typeof useBbNavigate>,
+  url: string,
+): void {
+  if (!navigate.openUrl(url)) window.open(url, "_blank", "noopener,noreferrer");
+}
+
+export function earlierPullRequestsLabel(count: number): string {
+  return `${count} earlier pull request${count === 1 ? "" : "s"}`;
+}
+
+export function EarlierPullRequestsMenu({
+  pullRequests,
+}: {
+  pullRequests: readonly PullRequest[];
+}) {
+  const navigate = useBbNavigate();
+  if (pullRequests.length === 0) return null;
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          aria-label={earlierPullRequestsLabel(pullRequests.length)}
+          className={cn(
+            "flex shrink-0 items-center text-xs text-muted-foreground transition-colors hover:bg-state-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring data-[state=open]:bg-state-active data-[state=open]:text-foreground",
+            CONTEXT_CARD_SEGMENT_CLASS,
+          )}
+        >
+          +{pullRequests.length}
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="start"
+        sideOffset={2}
+        mobileTitle="Earlier pull requests"
+      >
+        {pullRequests.map((pullRequest) => (
+          <DropdownMenuItem
+            key={pullRequest.url}
+            textValue={`#${pullRequest.number} ${pullRequest.title}`}
+            aria-label={`Pull request ${pullRequest.number}: ${describePullRequestStatus(pullRequest)}`}
+            onSelect={() => openPullRequestUrl(navigate, pullRequest.url)}
+          >
+            <PullRequestStateIcon
+              pullRequest={pullRequest}
+              className="size-3.5"
+            />
+            <span className="shrink-0 text-muted-foreground">
+              #{pullRequest.number}
+            </span>
+            <span className="min-w-0 max-w-72 truncate">
+              {pullRequest.title}
+            </span>
+            <span className="shrink-0 text-muted-foreground">
+              {PULL_REQUEST_STATE_DISPLAY[pullRequest.state].label}
+            </span>
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -337,8 +408,14 @@ export function PullRequestSegmentSummary({
   segments,
 }: ExperimentalThreadContextSegmentProps) {
   const pullRequest = useThreadPullRequest(environment);
+  const earlier = useEarlierPullRequests(environment?.id, pullRequest);
   if (pullRequest === null) return null;
-  return <PullRequestLink pullRequest={pullRequest} segments={segments} />;
+  return (
+    <>
+      <PullRequestLink pullRequest={pullRequest} segments={segments} />
+      <EarlierPullRequestsMenu pullRequests={earlier} />
+    </>
+  );
 }
 
 export function PullRequestSegmentAction({

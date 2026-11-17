@@ -195,6 +195,13 @@ export type EnvironmentPullRequest = z.infer<
   typeof environmentPullRequestSchema
 >;
 
+export const environmentPullRequestHistorySchema = z
+  .object({ pullRequests: z.array(pullRequestSchema) })
+  .strict();
+export type EnvironmentPullRequestHistory = z.infer<
+  typeof environmentPullRequestHistorySchema
+>;
+
 export const pullRequestMergeMethodSchema = z.enum([
   "merge",
   "squash",
@@ -219,6 +226,17 @@ export const githubPrStatusRpcContract = defineRpcContract({
       })
       .strict(),
     output: z.record(z.string(), environmentPullRequestSchema),
+    keyTags: (key) => [environmentPullRequestTag(key)],
+  },
+  pullRequestHistory: {
+    experimental_description:
+      "Every GitHub pull request each environment has had, newest first, keyed by environment id. The current branch's pull request, when it has one, is first.",
+    input: z
+      .object({
+        keys: z.array(z.string().min(1)).min(1).max(PULL_REQUESTS_MAX_KEYS),
+      })
+      .strict(),
+    output: z.record(z.string(), environmentPullRequestHistorySchema),
     keyTags: (key) => [environmentPullRequestTag(key)],
   },
   refresh: {
@@ -318,6 +336,22 @@ export const githubPrStatusHostContract = defineRpcContract({
         })
         .strict(),
     ),
+  },
+  urlViews: {
+    experimental_retryable: true,
+    input: z
+      .object({
+        reads: z
+          .array(
+            z
+              .object({ path: z.string().min(1), url: z.string().url() })
+              .strict(),
+          )
+          .min(1)
+          .max(HOST_VIEWS_MAX_READS),
+      })
+      .strict(),
+    output: z.array(hostPullRequestLookupSchema),
   },
   upstream: {
     input: z.object({ path: z.string().min(1) }).strict(),
