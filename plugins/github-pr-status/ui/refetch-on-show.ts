@@ -32,9 +32,11 @@ export function useRefetchOnShowAndFocus({
     };
     document.addEventListener("visibilitychange", refetchIfVisible);
     window.addEventListener("pageshow", refetchIfVisible);
+    window.addEventListener("focus", refetchIfVisible);
     return () => {
       document.removeEventListener("visibilitychange", refetchIfVisible);
       window.removeEventListener("pageshow", refetchIfVisible);
+      window.removeEventListener("focus", refetchIfVisible);
       queueMicrotask(() => {
         const count = (shownCounts.get(shown) ?? 1) - 1;
         if (count > 0) shownCounts.set(shown, count);
