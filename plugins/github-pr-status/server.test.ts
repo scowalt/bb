@@ -368,6 +368,54 @@ describe("GitHub PR Status server", () => {
       );
       stop();
     });
+
+    it("keeps both PRs after a branch switch, the current branch's first", async () => {
+      const { fake } = await switchWhileHidden();
+      const stop = fake.harness.experimental_watchRpc("pullRequests", {
+        key: "env-1",
+      });
+      await vi.waitFor(async () =>
+        expect(
+          await fake.harness.callRpc("pullRequestHistory", { keys: ["env-1"] }),
+        ).toMatchObject({
+          "env-1": { pullRequests: [{ number: 283 }, { number: 282 }] },
+        }),
+      );
+      stop();
+
+      const text = await fake.harness.runCli(["show", "env-1"]);
+      expect(text.stdout).toMatch(/^Pull request: #283 open/u);
+      expect(text.stdout).toContain(
+        "Earlier pull requests:\n  #282 merged - Ship it (bb/first) https://github.com/acme/bb/pull/282",
+      );
+      const json = await fake.harness.runCli(["show", "env-1", "--json"]);
+      expect(JSON.parse(json.stdout)).toMatchObject({
+        outcome: "available",
+        pullRequest: { number: 283 },
+        pullRequests: [{ number: 283 }, { number: 282 }],
+      });
+    });
+  });
+
+  it("starts an upgraded database's history from its saved links", async () => {
+    const fake = await setup({});
+    await fake.harness.callRpc("pullRequests", { keys: ["env-1"] });
+    fake.bb.storage
+      .database()
+      .exec("DROP TABLE history; DELETE FROM _bb_migrations WHERE id = 1;");
+
+    const next = await fake.harness.reload(plugin);
+    await expect(
+      next.harness.callRpc("pullRequestHistory", {
+        keys: ["env-1", "env-2"],
+      }),
+    ).resolves.toEqual({
+      "env-1": {
+        pullRequests: [expect.objectContaining({ number: 7 })],
+      },
+      "env-2": { pullRequests: [] },
+    });
+    await next.harness.dispose();
   });
 
   it("serves cached rows without looking up the environment or machine again", async () => {

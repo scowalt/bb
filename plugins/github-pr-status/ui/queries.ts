@@ -49,6 +49,22 @@ export function useEnvironmentPullRequest(
   };
 }
 
+export function useEarlierPullRequests(
+  environmentId: string | null | undefined,
+  current: PullRequest | null,
+): PullRequest[] {
+  const query = useRpcKeyedQuery({
+    contract: githubPrStatusRpcContract,
+    method: "pullRequestHistory",
+    keys: environmentId ? [environmentId] : [],
+    enabled: Boolean(environmentId),
+  });
+  const history = environmentId
+    ? (query.data?.[environmentId]?.pullRequests ?? [])
+    : [];
+  return history.filter((pullRequest) => pullRequest.url !== current?.url);
+}
+
 const MERGE_METHOD_STORAGE_KEY = "bb.pullRequest.mergeMethod";
 
 function isMergeMethod(value: string | null): value is PullRequestMergeMethod {
