@@ -49,6 +49,10 @@ of its contract you read; `bb plugin rpc inspect bb--github-pr-status
 pullRequests` prints the full schema. Each key is an environment id and each
 row is `available` with the current branch's `pullRequest`, `absent`, or
 `unavailable` (the machine is offline or `gh` failed).
+To list every pull request an environment has had, not only the current
+branch's, read `pullRequestHistory` with the same keys: each row is
+`{ pullRequests }`, the current branch's PR first and then earlier ones newest
+first.
 Treat a query error, `absent` and `unavailable` as nothing to show. While a
 key is held by a mounted hook the plugin re-checks pending pull requests about
 every 30 seconds and refreshes the row only when it changes.

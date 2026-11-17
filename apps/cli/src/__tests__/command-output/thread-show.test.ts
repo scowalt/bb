@@ -26,16 +26,23 @@ describe("bb thread show command output", () => {
   function stubPullRequestRpc(
     environmentId: string,
     row: EnvironmentPullRequest,
+    history: PullRequest[] = row.outcome === "available"
+      ? [row.pullRequest]
+      : [],
   ): { urls: string[]; bodies: unknown[] } {
     const urls: string[] = [];
     const bodies: unknown[] = [];
     vi.mocked(fetch).mockImplementation(async (input, init) => {
-      urls.push(String(input));
+      const url = String(input);
+      urls.push(url);
       bodies.push(JSON.parse(String(init?.body)));
-      return new Response(
-        JSON.stringify({ ok: true, result: { [environmentId]: row } }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      );
+      const result = url.endsWith("/pullRequestHistory")
+        ? { [environmentId]: { pullRequests: history } }
+        : { [environmentId]: row };
+      return new Response(JSON.stringify({ ok: true, result }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
     });
     return { urls, bodies };
   }
@@ -526,8 +533,12 @@ describe("bb thread show command output", () => {
 
     expect(rpc.urls).toEqual([
       "http://server/api/v1/plugins/bb--github-pr-status/rpc/pullRequests",
+      "http://server/api/v1/plugins/bb--github-pr-status/rpc/pullRequestHistory",
     ]);
-    expect(rpc.bodies).toEqual([{ keys: ["env-show-pr"] }]);
+    expect(rpc.bodies).toEqual([
+      { keys: ["env-show-pr"] },
+      { keys: ["env-show-pr"] },
+    ]);
     const output = collectLogLines(vi.mocked(console.log)).join("\n");
     expect(output.indexOf("Environment:")).toBeLessThan(
       output.indexOf("Pull request:"),
@@ -543,6 +554,60 @@ describe("bb thread show command output", () => {
     );
     expect(output).toContain("Review:       review_required (1 requested)");
     expect(output).toContain("Merge:        mergeable");
+    expect(output).not.toContain("Earlier pull requests:");
+  });
+
+  it("bb thread show lists the environment's earlier pull requests after the current one", async () => {
+    const thread: domain.Thread = fixtures.makeThread({
+      id: "thread-show-history",
+      projectId: "proj-1",
+      providerId: "codex",
+      environmentId: "env-show-history",
+      status: "idle",
+      createdAt: 1,
+      updatedAt: 2,
+    });
+    const current = makePullRequest({
+      number: 283,
+      url: "https://github.com/example/bb/pull/283",
+    });
+    const earlier = makePullRequest({
+      number: 282,
+      title: "Diagnose setup",
+      state: "merged",
+      attention: "merged",
+      headRefName: "bb/setup-diagnosis",
+      url: "https://github.com/example/bb/pull/282",
+    });
+    stubPullRequestRpc(
+      "env-show-history",
+      { outcome: "available", pullRequest: current },
+      [current, earlier],
+    );
+    stubServerApi({
+      "v1.environments.:id.$get": vi.fn(async () =>
+        fixtures.makeEnvironment({
+          id: "env-show-history",
+          projectId: "proj-1",
+          hostId: "host-1",
+          createdAt: 1,
+          updatedAt: 2,
+        }),
+      ),
+      "v1.threads.:id.$get": vi.fn(async () => thread),
+      "v1.threads.:id.head-state.$get": fixtures.makeEmptyHeadStateGetMock(),
+      "v1.threads.:id.default-execution-options.$get":
+        fixtures.makeDefaultExecutionOptionsGetMock(),
+    });
+
+    await runCommand(["thread", "show", "thread-show-history"], register);
+
+    const output = collectLogLines(vi.mocked(console.log)).join("\n");
+    expect(output).toContain("Pull request: #283 open");
+    expect(output).toContain(
+      "    Earlier pull requests:\n      #282 merged - Diagnose setup (bb/setup-diagnosis) https://github.com/example/bb/pull/282",
+    );
+    expect(output.indexOf("#283")).toBeLessThan(output.indexOf("#282"));
   });
 
   it("bb thread show reports a failed pull request lookup distinctly from none", async () => {
@@ -633,6 +698,7 @@ describe("bb thread show command output", () => {
         pullRequest: {
           status: "available",
           pullRequest,
+          earlierPullRequests: [],
         },
       },
       pendingTodos: null,

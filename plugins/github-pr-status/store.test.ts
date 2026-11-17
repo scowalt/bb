@@ -58,9 +58,15 @@ function setup(
   const load = vi.fn(async (_id: string, _url: string | null) =>
     results.length > 1 ? results.shift()! : results[0]!,
   );
+  const loadEarlier = vi.fn(
+    async (_id: string, _url: string): Promise<EnvironmentPullRequest> => ({
+      outcome: "absent",
+    }),
+  );
   const publish = vi.fn();
   const store = createPullRequestStore({
     load,
+    loadEarlier,
     publish,
     persistence,
     branch: () => "bb/pr-watch",
@@ -69,7 +75,7 @@ function setup(
     },
   });
   stores.push(store);
-  return { load, publish, store, persistence, owner };
+  return { load, loadEarlier, publish, store, persistence, owner };
 }
 function available(pullRequest: PullRequest): EnvironmentPullRequest {
   return { outcome: "available", pullRequest };
@@ -228,14 +234,14 @@ describe("shared pull request refresh", () => {
     );
   });
 
-  it("replaces an environment's link on a branch change and deletes orphan snapshots", async () => {
+  it("moves an environment's link on a branch change, keeps the earlier PR in its history, and deletes both with the environment", async () => {
     vi.useFakeTimers();
     const next = pullRequest({
       number: 43,
       url: "https://github.com/acme/bb/pull/43",
       headRefName: "next",
     });
-    const { store, persistence, publish } = setup([
+    const { store, persistence, publish, owner } = setup([
       available(pullRequest()),
       available(next),
     ]);
@@ -247,9 +253,11 @@ describe("shared pull request refresh", () => {
     expect(persistence.links()).toMatchObject([
       { environmentId: "a", url: next.url },
     ]);
-    expect(
-      persistence.snapshots().map((snapshot) => snapshot.pullRequest.url),
-    ).toEqual([next.url]);
+    expect(store.history("a")).toEqual([next, pullRequest()]);
+    const restarted = setup([available(next)], owner);
+    expect(restarted.store.history("a")).toEqual([next, pullRequest()]);
+    expect(restarted.store.history("b")).toEqual([]);
+
     store.watch("a", new AbortController().signal);
     await flush();
     publish.mockClear();
@@ -257,7 +265,51 @@ describe("shared pull request refresh", () => {
     store.remove("a");
     expect(publish).toHaveBeenCalledExactlyOnceWith(["a"]);
     expect(persistence.links()).toEqual([]);
+    expect(persistence.history()).toEqual([]);
     expect(persistence.snapshots()).toEqual([]);
+  });
+
+  it("rechecks an earlier open PR every five minutes while watched, publishes when it merges, then leaves it alone", async () => {
+    vi.useFakeTimers();
+    const earlier = pullRequest();
+    const next = pullRequest({
+      number: 43,
+      url: "https://github.com/acme/bb/pull/43",
+      state: "merged",
+    });
+    const { store, load, loadEarlier, publish } = setup([
+      available(earlier),
+      available(next),
+    ]);
+    await store.read("a", { viewer: true });
+    store.refresh("a", true);
+    await store.read("a", { viewer: true });
+    const signal = new AbortController();
+    store.watch("a", signal.signal);
+    await flush();
+    load.mockClear();
+    publish.mockClear();
+    loadEarlier.mockResolvedValue(available(earlier));
+
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(loadEarlier.mock.calls).toEqual([["a", earlier.url]]);
+    expect(publish).not.toHaveBeenCalled();
+
+    loadEarlier.mockResolvedValue(
+      available(pullRequest({ state: "merged", attention: "merged" })),
+    );
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(loadEarlier).toHaveBeenCalledTimes(2);
+    expect(publish).toHaveBeenCalledExactlyOnceWith(["a"]);
+    expect(store.history("a").map((pr) => [pr.number, pr.state])).toEqual([
+      [43, "merged"],
+      [42, "merged"],
+    ]);
+
+    await vi.advanceTimersByTimeAsync(60 * 60_000);
+    expect(loadEarlier).toHaveBeenCalledTimes(2);
+    expect(load).not.toHaveBeenCalled();
+    signal.abort();
   });
 
   it("discards rows saved by another persistence version", async () => {
@@ -267,6 +319,7 @@ describe("shared pull request refresh", () => {
     const reopened = createPullRequestPersistence(owner.bb.storage);
     expect(reopened.snapshots()).toEqual([]);
     expect(reopened.links()).toEqual([]);
+    expect(reopened.history()).toEqual([]);
   });
 
   it("persists absence and rediscovers after an unwatched branch refresh", async () => {
