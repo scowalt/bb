@@ -111,9 +111,7 @@ function describePullRequest(pr: PullRequest): string {
   ].join("\n");
 }
 
-function describeEnvironmentPullRequest(
-  result: EnvironmentPullRequest,
-): string {
+function describeCurrentPullRequest(result: EnvironmentPullRequest): string {
   switch (result.outcome) {
     case "available":
       return describePullRequest(result.pullRequest);
@@ -122,6 +120,28 @@ function describeEnvironmentPullRequest(
     case "unavailable":
       return `Pull request lookup unavailable: ${result.message}`;
   }
+}
+
+function describeEnvironmentPullRequest(
+  result: EnvironmentPullRequest,
+  history: readonly PullRequest[],
+): string {
+  const current =
+    result.outcome === "available" ? result.pullRequest.url : null;
+  const earlier = history.filter((pr) => pr.url !== current);
+  return [
+    describeCurrentPullRequest(result),
+    ...(earlier.length === 0
+      ? []
+      : [
+          "",
+          "Earlier pull requests:",
+          ...earlier.map(
+            (pr) =>
+              `  #${pr.number} ${pr.state} - ${pr.title} (${pr.headRefName}) ${pr.url}`,
+          ),
+        ]),
+  ].join("\n");
 }
 
 export default function githubPrStatusPlugin(bb: BbPluginApi): void {
@@ -373,6 +393,26 @@ export default function githubPrStatusPlugin(bb: BbPluginApi): void {
     void runLoads(loads);
   }
 
+  async function loadEarlierPullRequest(
+    environmentId: string,
+    url: string,
+  ): Promise<EnvironmentPullRequest> {
+    const environment = await getEnvironment(environmentId);
+    if (environment?.status !== "ready" || environment.path === null)
+      return { outcome: "unavailable", message: "Environment is not ready" };
+    const [lookup] = await host.call(
+      "urlViews",
+      { reads: [{ path: environment.path, url }] },
+      { hostId: environment.hostId },
+    );
+    return lookup === undefined
+      ? {
+          outcome: "unavailable",
+          message: "The machine returned no pull request result",
+        }
+      : toEnvironmentPullRequest(lookup);
+  }
+
   function loadPullRequest(
     environmentId: string,
     url: string | null,
@@ -406,6 +446,7 @@ export default function githubPrStatusPlugin(bb: BbPluginApi): void {
     persistence,
     branch: (environmentId) => lookedUpBranches.get(environmentId) ?? null,
     load: loadPullRequest,
+    loadEarlier: loadEarlierPullRequest,
     publish: (environmentIds) => {
       bb.rpc.experimental_invalidate(
         environmentIds.map(environmentPullRequestTag),
@@ -587,6 +628,11 @@ export default function githubPrStatusPlugin(bb: BbPluginApi): void {
         );
         return Object.fromEntries(results);
       },
+      pullRequestHistory({ keys }) {
+        return Object.fromEntries(
+          keys.map((key) => [key, { pullRequests: store.history(key) }]),
+        );
+      },
       async refresh({ environmentId }) {
         await store.reread(environmentId);
         return { ok: true } as const;
@@ -656,19 +702,18 @@ export default function githubPrStatusPlugin(bb: BbPluginApi): void {
         "Runs gh on the environment's machine against its current branch. The machine must be online; bb does not wake it.",
       commands: {
         show: cliCommand({
-          summary: "Show an environment's pull request",
+          summary: "Show an environment's pull request and its earlier ones",
           positionals: ENVIRONMENT_POSITIONAL,
           options: { json: JSON_OPTION },
           async run(input) {
-            const result = await store.read(
-              input.positionals["environment-id"],
-              { viewer: false },
-            );
+            const environmentId = input.positionals["environment-id"];
+            const result = await store.read(environmentId, { viewer: false });
+            const history = store.history(environmentId);
             return {
               exitCode: 0,
               stdout: input.options.json
-                ? JSON.stringify(result)
-                : describeEnvironmentPullRequest(result),
+                ? JSON.stringify({ ...result, pullRequests: history })
+                : describeEnvironmentPullRequest(result, history),
             };
           },
         }),

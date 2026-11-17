@@ -9,7 +9,12 @@ import {
 } from "@testing-library/react";
 import type { ExperimentalThreadContextSegmentReference } from "@get-bb/plugin-sdk/app";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { EnvironmentPullRequest, PullRequest } from "../contract";
+import type {
+  EnvironmentPullRequest,
+  EnvironmentPullRequestHistory,
+  PullRequest,
+} from "../contract";
+import { PullRequestInfoRow } from "./PullRequestInfoRow";
 import {
   PullRequestSegmentAction,
   PullRequestSegmentSummary,
@@ -18,6 +23,7 @@ import {
 
 const sdk = vi.hoisted(() => ({
   rows: {} as Record<string, EnvironmentPullRequest>,
+  history: {} as Record<string, EnvironmentPullRequestHistory>,
   settings: { showPullRequest: true } as Record<string, boolean> | undefined,
   mutate: vi.fn(async () => ({ message: "Merged" })),
   isPending: false,
@@ -28,8 +34,19 @@ vi.mock("@get-bb/plugin-sdk/app", async () => {
   const { createContext, useContext } = await import("react");
   const threadContext = createContext(sdk);
   return {
-    experimental_useRpcKeyedQuery: () => ({
-      data: sdk.rows,
+    experimental_DetailRow: ({
+      label,
+      children,
+    }: {
+      label: string;
+      children: React.ReactNode;
+    }) => (
+      <div role="group" aria-label={label}>
+        {children}
+      </div>
+    ),
+    experimental_useRpcKeyedQuery: ({ method }: { method: string }) => ({
+      data: method === "pullRequestHistory" ? sdk.history : sdk.rows,
       error: null,
       refetch: async () => {},
     }),
@@ -112,6 +129,7 @@ afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
   sdk.rows = {};
+  sdk.history = {};
   sdk.settings = { showPullRequest: true };
   sdk.isPending = false;
   sdk.threadContextKind = "banner";
@@ -213,6 +231,66 @@ describe("pull request context segment", () => {
     expect(container.textContent).not.toContain("· Open");
     expect(container.textContent).not.toContain("Ready to merge");
     expect(container.querySelector("[data-promptbox-hide-compact]")).toBeNull();
+  });
+
+  describe("after the environment switched from an earlier pull request", () => {
+    const EARLIER: PullRequest = {
+      ...PULL_REQUEST,
+      number: 127,
+      title: "Diagnose the setup",
+      state: "merged",
+      attention: "merged",
+      url: "https://github.com/acme/bb/pull/127",
+      headRefName: "bb/setup-diagnosis",
+    };
+
+    function showWithEarlier() {
+      show(PULL_REQUEST);
+      sdk.history = { env_1: { pullRequests: [PULL_REQUEST, EARLIER] } };
+    }
+
+    it("keeps the current branch's pull request in the banner and counts the earlier one beside it", () => {
+      showWithEarlier();
+      renderPart("summary");
+
+      expect(
+        screen.getByRole("link", { name: /^Pull request 128:/u }),
+      ).toBeTruthy();
+      expect(
+        screen.getByRole("button", { name: "1 earlier pull request" })
+          .textContent,
+      ).toBe("+1");
+      expect(screen.queryByRole("link", { name: /127/u })).toBeNull();
+    });
+
+    it("shows no count when the environment had only one pull request", () => {
+      show(PULL_REQUEST);
+      sdk.history = { env_1: { pullRequests: [PULL_REQUEST] } };
+      renderPart("summary");
+      expect(screen.queryByRole("button", { name: /earlier/u })).toBeNull();
+    });
+
+    it("lists the earlier pull request below the current one in Info", () => {
+      showWithEarlier();
+      render(
+        <PullRequestInfoRow
+          threadId="thr_1"
+          projectId="proj_1"
+          environment={{ id: "env_1" }}
+        />,
+      );
+
+      const links = screen
+        .getAllByRole("link")
+        .map((link) => link.getAttribute("aria-label"));
+      expect(links).toEqual([
+        expect.stringMatching(/^Pull request 128:/u),
+        expect.stringMatching(/^Pull request 127: Merged/u),
+      ]);
+      expect(
+        screen.getByRole("group", { name: "Earlier PRs" }).textContent,
+      ).toBe("#127Merged");
+    });
   });
 
   it("keeps a standalone terminal state label", () => {

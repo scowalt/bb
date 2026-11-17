@@ -12,7 +12,7 @@ import { GithubFaviconIcon } from "./GithubFaviconIcon";
 import { useOpenUrlClick } from "./PullRequestContextSegment";
 import { PullRequestNextStepLabel } from "./PullRequestNextStepLabel";
 import { PullRequestStateIcon } from "./PullRequestStatusPill";
-import { useEnvironmentPullRequest } from "./queries";
+import { useEarlierPullRequests, useEnvironmentPullRequest } from "./queries";
 import type { PullRequest } from "../contract";
 
 export function PullRequestSummary({
@@ -64,9 +64,33 @@ export function PullRequestRow({ pullRequest }: { pullRequest: PullRequest }) {
   );
 }
 
+export function EarlierPullRequestsRow({
+  pullRequests,
+}: {
+  pullRequests: readonly PullRequest[];
+}) {
+  if (pullRequests.length === 0) return null;
+  return (
+    <DetailRow icon="GitPullRequest" label="Earlier PRs" align="start">
+      <span className="flex min-w-0 flex-col gap-1">
+        {pullRequests.map((pullRequest) => (
+          <PullRequestSummary key={pullRequest.url} pullRequest={pullRequest} />
+        ))}
+      </span>
+    </DetailRow>
+  );
+}
+
 export function PullRequestInfoRow({
   environment,
 }: ExperimentalThreadInfoProps) {
-  const { pullRequest } = useEnvironmentPullRequest(environment?.id ?? null);
-  return pullRequest ? <PullRequestRow pullRequest={pullRequest} /> : null;
+  const environmentId = environment?.id ?? null;
+  const { pullRequest } = useEnvironmentPullRequest(environmentId);
+  const earlier = useEarlierPullRequests(environmentId, pullRequest);
+  return (
+    <>
+      {pullRequest ? <PullRequestRow pullRequest={pullRequest} /> : null}
+      <EarlierPullRequestsRow pullRequests={earlier} />
+    </>
+  );
 }
