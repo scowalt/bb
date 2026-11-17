@@ -103,6 +103,17 @@ describe("useEnvironmentPullRequest refreshes", () => {
     expect(keyedQuery.refresh).toHaveBeenCalledTimes(1);
   });
 
+  it("refetches when a window that stayed visible regains focus", async () => {
+    keyedQuery.data = { "env-focus": row("merged") };
+    renderHook(() => useEnvironmentPullRequest("env-focus"));
+    await settle();
+
+    window.dispatchEvent(new FocusEvent("focus"));
+    await settle();
+
+    expect(keyedQuery.refetch.mock.calls).toEqual([[["env-focus"]]]);
+  });
+
   it("does not refetch while the page is hidden", async () => {
     keyedQuery.data = { "env-hidden": row("open") };
     renderHook(() => useEnvironmentPullRequest("env-hidden"));
