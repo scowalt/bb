@@ -12,6 +12,14 @@ number in its state's color, shown when the `threadRowMetadata` experiment and O
 sidebars read their PR status from it. Pending checks re-check about every 30
 seconds in one batched GitHub request per machine.
 
+The plugin also remembers every pull request an environment's branches have
+had, so a thread that opened a PR, switched branches and opened another keeps
+both. The current branch's PR stays primary: it is the one the banner, card
+and sidebar badge show and the only one `ready`, `draft` and `merge` act on.
+The banner adds a `+N` menu of the earlier PRs, the thread context card lists
+them under the current one with only Open and Copy link, and the Info panel
+shows them in an Earlier PRs row.
+
 ```sh
 bb pull-request show <environment-id> [--json]
 bb pull-request ready <environment-id> [--json]
@@ -20,8 +28,12 @@ bb pull-request merge <environment-id> [--method merge|squash|rebase] [--json]
 ```
 
 - `show` prints the PR number, state, branch, attention, checks, review and
-  mergeability. `--json` prints `{ "outcome": "available", "pullRequest" }`,
-  `{ "outcome": "absent" }` or `{ "outcome": "unavailable", "message" }`.
+  mergeability, then the environment's earlier pull requests. `--json` prints
+  `{ "outcome": "available", "pullRequest" }`, `{ "outcome": "absent" }` or
+  `{ "outcome": "unavailable", "message" }`, each with `pullRequests`, every
+  PR the environment has had, current first, then newest first.
+  `bb thread show` prints the same earlier list, and its `--json` adds
+  `environment.pullRequest.earlierPullRequests`.
 - `ready` needs a draft PR, `draft` needs an open PR and `merge` needs an open
   PR GitHub reports as mergeable. Each re-reads the PR first and fails with
   the reason otherwise.
@@ -41,6 +53,12 @@ pass up to 200 environment ids and get one row per id. While a client watches
 a row, the plugin re-checks an open or draft PR every 30 seconds while any check is pending,
 auto-merge is on, the PR is queued or mergeability is unknown, and about every 5 minutes for other open or draft PRs. Merged and closed PRs do not poll. It also rechecks after a turn that ran `gh`, or discovers a PR after a turn on a branch without one. Environment status and branch changes refresh; ref changes read the local upstream OID and fetch only when it changes. App reads answer at once from what the plugin has and refresh a stale row in the background: open and draft PRs after 30 seconds, merged and closed PRs after an hour, a "no PR" result after 5 minutes. Opening a thread, including by loading the page on it, re-checks its PR on GitHub through `refresh`, whatever the row's age; other views ask again when they first show and each time the page shows again. CLI and RPC reads wait for a row older than 10 seconds. Call `refresh` with `{ environmentId }` to re-check a row on GitHub now; it resolves once the row is current. Saved rows survive a restart. Environments sharing a PR share its fetch and timer, and viewers refresh only when the row changes.
 
+`pullRequestHistory` takes the same `{ keys }` and returns
+`{ pullRequests }` per environment: the current branch's PR first when it has
+one, then earlier PRs newest first. It shares `pullRequests`' row tag, so a
+watched `pullRequests` key refreshes both. Earlier open or draft PRs re-check
+about every 5 minutes while watched.
+
 ```ts
 experimental_useRpcKeyedQuery({
   pluginId: "bb--github-pr-status",
@@ -51,4 +69,4 @@ experimental_useRpcKeyedQuery({
 ```
 
 `bb plugin rpc inspect bb--github-pr-status` prints the input and output schemas
-for `pullRequests`, `markReady`, `markDraft` and `merge`.
+for `pullRequests`, `pullRequestHistory`, `markReady`, `markDraft` and `merge`.
