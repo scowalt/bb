@@ -598,6 +598,8 @@ export default function githubPrStatusPlugin(bb: BbPluginApi): void {
   bb.rpc.experimental_whileWatched("pullRequests", (read, signal) => {
     if (!("key" in read)) return;
     store.watch(read.key, signal);
+    if (!store.hasPullRequest(read.key) || store.isSettled(read.key))
+      void inspectRefs(read.key, false);
     const release = retainEnvironmentEvents();
     signal.addEventListener("abort", release, { once: true });
   });
