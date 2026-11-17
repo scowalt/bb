@@ -279,6 +279,97 @@ describe("GitHub PR Status server", () => {
     ]);
   });
 
+  describe("an environment that changes branch while no page watches it", () => {
+    const merged = view({
+      number: 282,
+      state: "MERGED",
+      url: "https://github.com/acme/bb/pull/282",
+      headRefName: "bb/first",
+    });
+    const next = view({
+      number: 283,
+      url: "https://github.com/acme/bb/pull/283",
+      headRefName: "bb/second",
+    });
+
+    async function switchWhileHidden() {
+      let branch = "bb/first";
+      let changed: ((event: { id: string; changes: string[] }) => void) | null =
+        null;
+      const fake = await setup({
+        subscribe: (({ callback }: { callback: typeof changed }) => {
+          changed = callback;
+          return () => {};
+        }) as never,
+        callHost: (call) => {
+          if (call.method === "upstream")
+            return { oid: `oid-${branch}`, branchName: branch };
+          return (call.input as { reads: ViewRead[] }).reads.map((read) => ({
+            lookup: {
+              outcome: "found",
+              pullRequest: branch === "bb/first" ? merged : next,
+            },
+            refs: { oid: `oid-${branch}`, branchName: branch },
+          }));
+        },
+      });
+      const read = () =>
+        fake.harness.callRpc("pullRequests", { keys: ["env-1"] });
+      const hide = fake.harness.experimental_watchRpc("pullRequests", {
+        key: "env-1",
+      });
+      await vi.waitFor(async () =>
+        expect(await read()).toMatchObject({
+          "env-1": { pullRequest: { number: 282 } },
+        }),
+      );
+      hide();
+      branch = "bb/second";
+      changed!({ id: "env-1", changes: ["metadata-changed"] });
+      return { fake, read };
+    }
+
+    it("shows the new branch's PR when a page watches it again", async () => {
+      const { fake, read } = await switchWhileHidden();
+      const invalidations = fake.harness.experimental_rpcInvalidations.length;
+
+      const stop = fake.harness.experimental_watchRpc("pullRequests", {
+        key: "env-1",
+      });
+
+      await vi.waitFor(() =>
+        expect(
+          fake.harness.experimental_rpcInvalidations.slice(invalidations),
+        ).toContainEqual(["environment:env-1"]),
+      );
+      expect(await read()).toMatchObject({
+        "env-1": { pullRequest: { number: 283 } },
+      });
+      stop();
+    });
+
+    it("tells a returning page about a PR another reader found while it was away", async () => {
+      const { fake } = await switchWhileHidden();
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(Date.now() + 11_000);
+      await expect(
+        fake.harness.runCli(["show", "env-1"]),
+      ).resolves.toMatchObject({ stdout: expect.stringContaining("#283") });
+      const invalidations = fake.harness.experimental_rpcInvalidations.length;
+
+      const stop = fake.harness.experimental_watchRpc("pullRequests", {
+        key: "env-1",
+      });
+
+      await vi.waitFor(() =>
+        expect(
+          fake.harness.experimental_rpcInvalidations.slice(invalidations),
+        ).toContainEqual(["environment:env-1"]),
+      );
+      stop();
+    });
+  });
+
   it("serves cached rows without looking up the environment or machine again", async () => {
     const fake = await setup({});
     await fake.harness.callRpc("pullRequests", { keys: ["env-1"] });
