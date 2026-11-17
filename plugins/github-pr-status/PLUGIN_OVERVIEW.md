@@ -4,7 +4,8 @@ See the GitHub pull request for each thread's branch where you already work: a b
 
 - A badge under each sidebar thread's title with the pull request's number in its state's color, followed by a red cross when it needs action (failing checks, changes requested, conflicts, behind its base or blocked by rules) or else a yellow dot while checks run; hover it for the title and check counts. Turn on the Thread row metadata experiment, then Organize → Rows → Metadata.
 - One rolled-up status per pull request: checks, review, conflicts, merge queue and auto-merge.
-- Ready for review, Convert to draft and Merge (merge, squash or rebase).
+- Ready for review, Convert to draft and Merge (merge, squash or rebase) on the current branch's pull request.
+- Every pull request a thread opened: after it switches branches, the banner's `+N` menu, the thread context card and the Info panel's Earlier PRs row keep the earlier ones.
 - Live updates while you watch: pending checks are re-checked every 30 seconds and other open or draft PRs every 5 minutes, in one batched GitHub request per machine, and views refresh only when something changed.
 
 ## How it works
@@ -13,7 +14,7 @@ The plugin batches GitHub reads through `gh api graphql` in the environment's wo
 
 Use the CLI from any thread:
 
-- `bb pull-request show <environment-id>` prints the pull request.
+- `bb pull-request show <environment-id>` prints the pull request and the environment's earlier ones.
 - `bb pull-request ready|draft <environment-id>` changes draft state.
 - `bb pull-request merge <environment-id> --method squash` merges it.
 

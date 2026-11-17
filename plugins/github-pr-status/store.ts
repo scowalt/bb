@@ -15,7 +15,12 @@ type Lookup =
   | { outcome: "absent" }
   | { outcome: "unavailable"; message: string };
 type Entry = { lookup: Lookup; fetchedAt: number };
-type Check = { environmentId: string; interval: number; dueAt: number };
+type Check = {
+  environmentId: string;
+  current: boolean;
+  interval: number;
+  dueAt: number;
+};
 
 function live(pr: PullRequest): boolean {
   return pr.state === "open" || pr.state === "draft";
@@ -37,6 +42,10 @@ export function createPullRequestStore(options: {
     url: string | null,
     refresh: boolean,
   ): Promise<EnvironmentPullRequest>;
+  loadEarlier(
+    environmentId: string,
+    url: string,
+  ): Promise<EnvironmentPullRequest>;
   branch(environmentId: string): string | null;
   persistence: PullRequestPersistence;
   publish(environmentIds: readonly string[]): void;
@@ -44,6 +53,7 @@ export function createPullRequestStore(options: {
 }) {
   const snapshots = new Map<string, Snapshot>();
   const lookups = new Map<string, Entry>();
+  const seen = new Map<string, Map<string, number>>();
   const watches = new Map<string, Set<AbortSignal>>();
   const served = new Map<string, string>();
   const released = new Map<string, string>();
@@ -68,6 +78,14 @@ export function createPullRequestStore(options: {
       fetchedAt: snapshot?.fetchedAt ?? link.discoveredAt,
     });
   }
+  for (const entry of options.persistence.history())
+    remember(entry.environmentId, entry.url, entry.seenAt);
+
+  function remember(environmentId: string, url: string, seenAt: number) {
+    const urls = seen.get(environmentId) ?? new Map<string, number>();
+    if (!urls.has(url)) urls.set(url, seenAt);
+    seen.set(environmentId, urls);
+  }
 
   function currentUrl(environmentId: string): string | null {
     const lookup = lookups.get(environmentId)?.lookup;
@@ -84,8 +102,36 @@ export function createPullRequestStore(options: {
       : { outcome: "absent" };
   }
 
+  function earlierUrls(environmentId: string): string[] {
+    const current = currentUrl(environmentId);
+    return [...(seen.get(environmentId) ?? [])]
+      .filter(([url]) => url !== current)
+      .sort(([, a], [, b]) => b - a)
+      .map(([url]) => url);
+  }
+
+  function historyFor(environmentId: string): PullRequest[] {
+    const current = resultFor(environmentId);
+    return [
+      ...(current.outcome === "available" ? [current.pullRequest] : []),
+      ...earlierUrls(environmentId).flatMap((url) => {
+        const snapshot = snapshots.get(url);
+        return snapshot === undefined ? [] : [snapshot.pullRequest];
+      }),
+    ];
+  }
+
+  function contentFor(environmentId: string): string {
+    return JSON.stringify([
+      resultFor(environmentId),
+      historyFor(environmentId),
+    ]);
+  }
+
   function dropOrphanSnapshots() {
     const referenced = new Set<string>();
+    for (const urls of seen.values())
+      for (const url of urls.keys()) referenced.add(url);
     for (const environmentId of lookups.keys()) {
       const url = currentUrl(environmentId);
       if (url !== null) referenced.add(url);
@@ -101,7 +147,7 @@ export function createPullRequestStore(options: {
     if (disposed) return;
     const changed: string[] = [];
     for (const environmentId of watches.keys()) {
-      const content = JSON.stringify(resultFor(environmentId));
+      const content = contentFor(environmentId);
       const previous = served.get(environmentId);
       if (previous !== undefined && previous !== content)
         changed.push(environmentId);
@@ -150,10 +196,28 @@ export function createPullRequestStore(options: {
       if (interval !== null)
         due.set(url, {
           environmentId,
+          current: true,
           interval,
           dueAt: snapshot.fetchedAt + interval,
         });
     }
+    for (const environmentId of watches.keys())
+      for (const url of earlierUrls(environmentId)) {
+        const snapshot = snapshots.get(url);
+        if (
+          snapshot === undefined ||
+          !live(snapshot.pullRequest) ||
+          due.has(url) ||
+          inflight.has(url)
+        )
+          continue;
+        due.set(url, {
+          environmentId,
+          current: false,
+          interval: QUIET_CHECK_MS,
+          dueAt: snapshot.fetchedAt + QUIET_CHECK_MS,
+        });
+      }
     return due;
   }
 
@@ -169,13 +233,44 @@ export function createPullRequestStore(options: {
         timer = undefined;
         const now = Date.now();
         for (const [url, check] of checks()) {
-          if (check.dueAt - check.interval / 2 <= now)
-            void load(check.environmentId, url);
+          if (check.dueAt - check.interval / 2 > now) continue;
+          if (check.current) void load(check.environmentId, url);
+          else void loadEarlier(check.environmentId, url);
         }
         schedule();
       },
       Math.max(0, next - Date.now()),
     );
+  }
+
+  function loadEarlier(environmentId: string, url: string): Promise<void> {
+    const pending = inflight.get(url);
+    if (pending !== undefined) return pending;
+    const task = options
+      .loadEarlier(environmentId, url)
+      .then((result) => {
+        if (disposed) return;
+        const fetchedAt = Date.now();
+        if (result.outcome === "available" && result.pullRequest.url === url) {
+          snapshots.set(url, { pullRequest: result.pullRequest, fetchedAt });
+          options.persistence.saveSnapshot(result.pullRequest, fetchedAt);
+        } else {
+          const snapshot = snapshots.get(url);
+          if (snapshot !== undefined) snapshot.fetchedAt = fetchedAt;
+        }
+        publishChanges();
+      })
+      .catch((error) => {
+        const snapshot = snapshots.get(url);
+        if (snapshot) snapshot.fetchedAt = Date.now();
+        options.onCheckFailed(environmentId, error);
+      })
+      .finally(() => {
+        if (inflight.get(url) === task) inflight.delete(url);
+        schedule();
+      });
+    inflight.set(url, task);
+    return task;
   }
 
   async function load(
@@ -231,6 +326,8 @@ export function createPullRequestStore(options: {
                 : result,
             fetchedAt,
           });
+          if (result.outcome === "available")
+            remember(environmentId, result.pullRequest.url, fetchedAt);
           if (result.outcome !== "unavailable")
             options.persistence.link(
               environmentId,
@@ -285,13 +382,14 @@ export function createPullRequestStore(options: {
       if (cached === undefined || !viewer) await loading;
     }
     const result = resultFor(environmentId);
-    if (viewer) served.set(environmentId, JSON.stringify(result));
+    if (viewer) served.set(environmentId, contentFor(environmentId));
     schedule();
     return result;
   }
 
   return {
     read,
+    history: historyFor,
     currentUrl,
     isSettled,
     hasPullRequest(environmentId: string) {
@@ -337,16 +435,14 @@ export function createPullRequestStore(options: {
         void read(environmentId, { viewer: false });
     },
     remove(environmentId: string) {
-      const previous = JSON.stringify(resultFor(environmentId));
+      const previous = contentFor(environmentId);
       generations.set(environmentId, (generations.get(environmentId) ?? 0) + 1);
       lookups.delete(environmentId);
+      seen.delete(environmentId);
       served.delete(environmentId);
       released.delete(environmentId);
       options.persistence.removeEnvironment(environmentId);
-      if (
-        watches.has(environmentId) &&
-        previous !== JSON.stringify(resultFor(environmentId))
-      )
+      if (watches.has(environmentId) && previous !== contentFor(environmentId))
         options.publish([environmentId]);
       dropOrphanSnapshots();
       schedule();
