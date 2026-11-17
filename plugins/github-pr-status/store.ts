@@ -46,6 +46,7 @@ export function createPullRequestStore(options: {
   const lookups = new Map<string, Entry>();
   const watches = new Map<string, Set<AbortSignal>>();
   const served = new Map<string, string>();
+  const released = new Map<string, string>();
   const inflight = new Map<string, Promise<void>>();
   const settling = new Map<string, number>();
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -106,15 +107,30 @@ export function createPullRequestStore(options: {
         changed.push(environmentId);
       served.set(environmentId, content);
     }
-    if (changed.length === 0) return;
+    queuePublish(changed);
+  }
+
+  function queuePublish(environmentIds: readonly string[]) {
+    if (environmentIds.length === 0) return;
     if (unpublished.size === 0)
       queueMicrotask(() => {
-        const environmentIds = [...unpublished];
+        const pending = [...unpublished];
         unpublished.clear();
-        if (!disposed && environmentIds.length > 0)
-          options.publish(environmentIds);
+        if (!disposed && pending.length > 0) options.publish(pending);
       });
-    for (const environmentId of changed) unpublished.add(environmentId);
+    for (const environmentId of environmentIds) unpublished.add(environmentId);
+  }
+
+  async function catchUp(environmentId: string) {
+    await read(environmentId, { viewer: true });
+    const previous = released.get(environmentId);
+    released.delete(environmentId);
+    if (
+      previous !== undefined &&
+      watches.has(environmentId) &&
+      previous !== served.get(environmentId)
+    )
+      queuePublish([environmentId]);
   }
 
   function checks(): Map<string, Check> {
@@ -325,6 +341,7 @@ export function createPullRequestStore(options: {
       generations.set(environmentId, (generations.get(environmentId) ?? 0) + 1);
       lookups.delete(environmentId);
       served.delete(environmentId);
+      released.delete(environmentId);
       options.persistence.removeEnvironment(environmentId);
       if (
         watches.has(environmentId) &&
@@ -343,7 +360,11 @@ export function createPullRequestStore(options: {
         "abort",
         () => {
           signals.delete(signal);
-          if (signals.size === 0) watches.delete(environmentId);
+          if (signals.size === 0) {
+            watches.delete(environmentId);
+            const content = served.get(environmentId);
+            if (content !== undefined) released.set(environmentId, content);
+          }
           schedule();
         },
         { once: true },
@@ -353,8 +374,7 @@ export function createPullRequestStore(options: {
         watchReadTimer = undefined;
         const environmentIds = [...watchReads];
         watchReads.clear();
-        for (const id of environmentIds)
-          if (watches.has(id)) void read(id, { viewer: true });
+        for (const id of environmentIds) if (watches.has(id)) void catchUp(id);
       }, WATCH_READ_WINDOW_MS);
     },
     dispose() {
