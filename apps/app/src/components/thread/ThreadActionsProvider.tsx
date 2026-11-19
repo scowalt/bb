@@ -10,7 +10,11 @@ import {
   type ReactNode,
 } from "react";
 import { useLocation } from "react-router-dom";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import {
+  useMutation,
+  useQueryClient,
+  type QueryClient,
+} from "@tanstack/react-query";
 import { useSetAtom, useStore } from "jotai";
 import type { ExperimentalThreadRequests } from "@get-bb/plugin-sdk";
 import { appToast } from "@/components/ui/app-toast";
@@ -33,6 +37,8 @@ import { sdk } from "@/lib/sdk";
 import { getPluginBoundSdk } from "@/lib/plugin-bound-sdk";
 import { useSystemConfig } from "@/hooks/queries/system-queries";
 import { useRouteState } from "@/hooks/useRouteState";
+import { getCachedSidebarNavigationThreads } from "@/hooks/cache-owners/query-cache";
+import { getSidebarThreadsNearestTo } from "@/components/sidebar/sidebarThreadShortcuts";
 import { useDialogState } from "@bb/shared-ui/use-dialog-state";
 import { showMutationErrorToast } from "@/lib/mutation-errors";
 import { getThreadDisplayTitle } from "@/lib/thread-title";
@@ -50,7 +56,11 @@ import { defineSplit } from "@/lib/define-split";
 import { ArchivedThreadToastDescription } from "@/components/thread/ArchivedThreadToastDescription";
 import { destroyPersistedBrowserViewsForThread } from "@/components/secondary-panel/browserViewVisibilityCoordinator";
 import { getThreadReadToggleAction } from "@bb/client-core";
-import { getRootComposeRoutePath, getThreadRoutePath } from "@/lib/route-paths";
+import {
+  getRootComposeRoutePath,
+  getThreadRoutePath,
+  type ThreadRoutePathArgs,
+} from "@/lib/route-paths";
 import { getDesktopBrowserApi } from "@/lib/bb-desktop";
 import { useRouteNavigate } from "@/components/ui/app-route-anchor";
 import { lookupCachedThread, resolveThread } from "@/lib/cached-thread";
@@ -193,6 +203,42 @@ function createDialogSettlements(): DialogSettlements {
       }
     },
   };
+}
+
+function getSidebarThreadsNearestToViewed(
+  viewedThreadId: string | undefined,
+  queryClient: QueryClient,
+): ThreadRoutePathArgs[] {
+  if (viewedThreadId === undefined) return [];
+  const nearbyThreads = getSidebarThreadsNearestTo(
+    document.querySelector<HTMLElement>('[data-sidebar="panel"]'),
+    viewedThreadId,
+  );
+  if (nearbyThreads.length === 0) return [];
+  const projectIdByThreadId = new Map(
+    getCachedSidebarNavigationThreads(queryClient).map((thread) => [
+      thread.id,
+      thread.projectId,
+    ]),
+  );
+  return nearbyThreads.flatMap(({ threadId, projectId }) => {
+    const resolvedProjectId = projectId ?? projectIdByThreadId.get(threadId);
+    return resolvedProjectId === undefined
+      ? []
+      : [{ projectId: resolvedProjectId, threadId }];
+  });
+}
+
+function getRouteAfterArchive(
+  nearbyThreads: readonly ThreadRoutePathArgs[],
+  archivedThreadIds: readonly string[],
+): string {
+  const nextThread = nearbyThreads.find(
+    ({ threadId }) => !archivedThreadIds.includes(threadId),
+  );
+  return nextThread === undefined
+    ? getRootComposeRoutePath()
+    : getThreadRoutePath(nextThread);
 }
 
 function hasRunningWork(thread: Thread): boolean {
@@ -451,22 +497,27 @@ export function ThreadActionsProvider({
       archivedThreadIds: readonly string[],
       toastId: string,
       singleThread: Thread | null,
+      nearbyThreads: readonly ThreadRoutePathArgs[],
     ) => {
       const browserSdk = getPluginBoundSdk(sdk, "thread-list", queryClient);
       const displacedThreadId = viewedThreadIdRef.current;
       const displaced =
         displacedThreadId !== undefined &&
         archivedThreadIds.includes(displacedThreadId);
+      const routeAfterArchive = getRouteAfterArchive(
+        nearbyThreads,
+        archivedThreadIds,
+      );
       const closeResult = closePanesForThreads([...archivedThreadIds]);
       syncNavigationAfterClose(closeResult, () => {
         const viewed = viewedThreadIdRef.current;
         if (viewed && archivedThreadIds.includes(viewed))
-          navigate(getRootComposeRoutePath());
+          navigate(routeAfterArchive);
       });
       const destination = displaced
         ? closeResult.focusedRoute !== null
           ? getThreadRoutePath(closeResult.focusedRoute)
-          : getRootComposeRoutePath()
+          : routeAfterArchive
         : null;
       const previousRoute = viewedRouteRef.current;
       if (destination !== null) viewedRouteRef.current = destination;
@@ -518,6 +569,10 @@ export function ThreadActionsProvider({
 
   const archiveEnvironmentThreads = useCallback(
     async (environmentId: string) => {
+      const nearbyThreads = getSidebarThreadsNearestToViewed(
+        viewedThreadIdRef.current,
+        queryClient,
+      );
       try {
         const response = await archiveEnvironmentMutateAsync(environmentId);
         if (response.archivedThreadIds.length === 0) return;
@@ -525,6 +580,7 @@ export function ThreadActionsProvider({
           response.archivedThreadIds,
           `environment-archived-${environmentId}`,
           null,
+          nearbyThreads,
         );
       } catch (error) {
         showMutationErrorToast({
@@ -534,11 +590,15 @@ export function ThreadActionsProvider({
         throw error;
       }
     },
-    [archiveEnvironmentMutateAsync, presentArchivedThreads],
+    [archiveEnvironmentMutateAsync, presentArchivedThreads, queryClient],
   );
 
   const performArchiveThreads = useCallback(
     async ({ threads, roots }: ArchiveDialogRequest) => {
+      const nearbyThreads = getSidebarThreadsNearestToViewed(
+        viewedThreadIdRef.current,
+        queryClient,
+      );
       const results = await Promise.allSettled(
         roots.map((root) =>
           archiveThreadAndChildrenMutateAsync({ id: root.id }),
@@ -568,12 +628,14 @@ export function ThreadActionsProvider({
           ? `thread-archived-${singleThread.id}`
           : `threads-archived-${roots.map((root) => root.id).join("-")}`,
         singleThread,
+        nearbyThreads,
       );
     },
     [
       archiveThreadAndChildrenMutateAsync,
       closeArchiveDialog,
       presentArchivedThreads,
+      queryClient,
     ],
   );
 
