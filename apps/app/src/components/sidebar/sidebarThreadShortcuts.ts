@@ -100,6 +100,16 @@ export function getSidebarThreadNavigationTargets(
   return collectSidebarThreadTargets(root, Number.POSITIVE_INFINITY, true);
 }
 
+export function getSidebarThreadsNearestTo(
+  root: HTMLElement | null,
+  threadId: string,
+): SidebarThreadShortcutTarget[] {
+  const targets = getSidebarThreadNavigationTargets(root);
+  const index = targets.findIndex((target) => target.threadId === threadId);
+  if (index === -1) return [];
+  return [...targets.slice(index + 1), ...targets.slice(0, index).reverse()];
+}
+
 export function useSidebarThreadShortcut(
   threadId: string,
 ): SidebarThreadShortcutPresentation | undefined {
