@@ -742,6 +742,120 @@ describe("ThreadActionsProvider archive feedback", () => {
     );
   });
 
+  describe("opening the nearest sidebar thread", () => {
+    const checkVisibilityDescriptor = Object.getOwnPropertyDescriptor(
+      Element.prototype,
+      "checkVisibility",
+    );
+
+    beforeEach(() => {
+      mocks.confirmThreadArchive = false;
+      Object.defineProperty(Element.prototype, "checkVisibility", {
+        configurable: true,
+        writable: true,
+        value: () => true,
+      });
+    });
+
+    afterEach(() => {
+      document.querySelector('[data-sidebar="panel"]')?.remove();
+      if (checkVisibilityDescriptor) {
+        Object.defineProperty(
+          Element.prototype,
+          "checkVisibility",
+          checkVisibilityDescriptor,
+        );
+      } else {
+        Reflect.deleteProperty(Element.prototype, "checkVisibility");
+      }
+    });
+
+    function mountSidebar(threadIds: readonly string[]) {
+      const threads = threadIds.map((id) =>
+        makeThreadListEntry(makeThread({ id })),
+      );
+      queryClient.setQueryData(
+        sidebarNavigationQueryKey(),
+        makeSidebarBootstrapResponse({
+          projects: [
+            makeProjectWithThreadsResponse({
+              id: "proj_test",
+              threads,
+            }),
+          ],
+        }),
+      );
+      const panel = document.createElement("div");
+      panel.dataset.sidebar = "panel";
+      for (const id of threadIds) {
+        const row = document.createElement("a");
+        row.dataset.sidebarThreadShortcutTarget = "";
+        row.dataset.sidebarThreadId = id;
+        panel.append(row);
+      }
+      document.body.append(panel);
+    }
+
+    async function archiveViewedThread(threadId: string) {
+      mocks.viewedThreadId = threadId;
+      mocks.pathname = `/projects/proj_test/threads/${threadId}`;
+      renderProvider(<ArchiveButton thread={makeThread({ id: threadId })} />);
+      fireEvent.click(screen.getByRole("button", { name: "Archive" }));
+      await vi.waitFor(() => expect(appToast.success).toHaveBeenCalled());
+    }
+
+    it("opens the next thread below, skipping archived children", async () => {
+      mountSidebar(["thr_above", "thr_parent", "thr_child", "thr_below"]);
+      await archiveViewedThread("thr_parent");
+      expect(mocks.navigate).toHaveBeenCalledTimes(1);
+      expect(mocks.navigate).toHaveBeenCalledWith(
+        "/projects/proj_test/threads/thr_below",
+      );
+    });
+
+    it("opens the nearest thread above when nothing remains below", async () => {
+      mountSidebar(["thr_top", "thr_above", "thr_parent", "thr_child"]);
+      await archiveViewedThread("thr_parent");
+      expect(mocks.navigate).toHaveBeenCalledWith(
+        "/projects/proj_test/threads/thr_above",
+      );
+    });
+
+    it("opens the new thread view when no other thread is listed", async () => {
+      mountSidebar(["thr_parent", "thr_child"]);
+      await archiveViewedThread("thr_parent");
+      expect(mocks.navigate).toHaveBeenCalledWith("/");
+    });
+
+    it("opens the next thread when an archived ancestor displaces the viewed child", async () => {
+      mountSidebar(["thr_parent", "thr_child", "thr_below"]);
+      mocks.viewedThreadId = "thr_child";
+      mocks.pathname = "/projects/proj_test/threads/thr_child";
+      renderProvider(<ArchiveButton thread={makeThread()} />);
+      fireEvent.click(screen.getByRole("button", { name: "Archive" }));
+      await vi.waitFor(() => expect(appToast.success).toHaveBeenCalled());
+      expect(mocks.navigate).toHaveBeenCalledWith(
+        "/projects/proj_test/threads/thr_below",
+      );
+    });
+
+    it("opens the nearest surviving thread after archiving the viewed thread's environment", async () => {
+      vi.mocked(sdk.environments.archiveThreads).mockResolvedValue({
+        ok: true,
+        archivedThreadIds: ["thr_parent", "thr_sibling"],
+      });
+      mountSidebar(["thr_above", "thr_parent", "thr_sibling"]);
+      mocks.viewedThreadId = "thr_parent";
+      mocks.pathname = "/projects/proj_test/threads/thr_parent";
+      renderProvider(<ArchiveEnvironmentButton />);
+      fireEvent.click(screen.getByRole("button", { name: "Archive group" }));
+      await vi.waitFor(() => expect(appToast.success).toHaveBeenCalled());
+      expect(mocks.navigate).toHaveBeenCalledWith(
+        "/projects/proj_test/threads/thr_above",
+      );
+    });
+  });
+
   it("does not return to the thread when the user navigated after archiving", async () => {
     const thread = makeThread();
     mocks.pathname = `/projects/${thread.projectId}/threads/${thread.id}`;
