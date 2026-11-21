@@ -322,7 +322,7 @@ const DefaultNewThreadComposer = memo(function DefaultNewThreadComposer({
         surface="new-thread"
         minHeight={NEW_THREAD_PROMPT_BOX_MIN_HEIGHT}
         placeholder={placeholder}
-        executionControls={<ExecutionControls {...execution} />}
+        executionControls={<ExecutionControls {...execution} newThread />}
       />
       <div
         data-new-thread-footer=""
