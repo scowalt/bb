@@ -1,4 +1,4 @@
-import { setDisabledProviderIds } from "@bb/db";
+import { getProjectExecutionDefaults, setDisabledProviderIds } from "@bb/db";
 import type {
   NewThreadExecutionChoice,
   NewThreadExecutionChooser,
@@ -459,6 +459,82 @@ describe("the new-thread execution chooser at thread create", () => {
         expect(options.permissionMode).toBe("accept-edits");
         expect(options.serviceTier).toBe("default");
         expect(options).not.toHaveProperty("sessionOptions");
+      });
+    });
+  });
+
+  it("starts a composer thread that named a provider but no model, as a hidden model picker sends it", async () => {
+    await withTestHarness(async (harness) => {
+      const fixture = await seedWorkspace(harness, "chooser-no-model");
+
+      const { options, thread } = await createAndStart(harness, fixture, {
+        providerId: "codex",
+        reasoningLevel: "low",
+        executionInputSources: {
+          providerId: "client-preference",
+          reasoningLevel: "client-preference",
+        },
+      });
+
+      expect(thread.providerId).toBe("codex");
+      expect(options.model).toEqual(expect.any(String));
+    });
+  });
+
+  describe("the project's remembered execution defaults", () => {
+    async function createInNewEnvironment(
+      harness: TestAppHarness,
+      fixture: Awaited<ReturnType<typeof seedWorkspace>>,
+    ) {
+      await createThreadFromRequest(harness.deps, {
+        projectId: fixture.project.id,
+        environment: {
+          type: "host",
+          hostId: fixture.host.id,
+          workspace: { type: "unmanaged", path: null },
+        },
+        input: textInput("Pick my model"),
+        origin: "app",
+        startedOnBehalfOf: null,
+        ...composerThread,
+      });
+      return getProjectExecutionDefaults(harness.deps.db, {
+        projectId: fixture.project.id,
+      });
+    }
+
+    it("remembers what a composer thread picked when no chooser is registered", async () => {
+      await withTestHarness(async (harness) => {
+        const fixture = await seedWorkspace(harness, "chooser-remember-none");
+
+        const defaults = await createInNewEnvironment(harness, fixture);
+
+        expect(defaults?.providerId).toBe("codex");
+        expect(defaults?.model).toBe("gpt-5");
+      });
+    });
+
+    it("does not remember the chooser's choice, so the next composer starts from what a person picked", async () => {
+      await withTestHarness(async (harness) => {
+        const fixture = await seedWorkspace(harness, "chooser-remember-chosen");
+        installChooser(() => OPUS_CHOICE);
+
+        const defaults = await createInNewEnvironment(harness, fixture);
+
+        expect(defaults).toBeNull();
+      });
+    });
+
+    it("keeps an earlier remembered default when the chooser picks another provider", async () => {
+      await withTestHarness(async (harness) => {
+        const fixture = await seedWorkspace(harness, "chooser-remember-kept");
+        const first = await createInNewEnvironment(harness, fixture);
+        installChooser(() => OPUS_CHOICE);
+
+        const second = await createInNewEnvironment(harness, fixture);
+
+        expect(first?.providerId).toBe("codex");
+        expect(second).toEqual(first);
       });
     });
   });
