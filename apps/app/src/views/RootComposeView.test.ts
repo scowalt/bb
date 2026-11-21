@@ -239,6 +239,7 @@ describe("resolveNewThreadProjectDefaultsState", () => {
 
 describe("resolveNewThreadSubmitDisabledReason", () => {
   const readyState = {
+    hideModelPicker: false,
     environmentProviderInputsBlocker: null,
     environmentSetupRequiredReason: null,
     isCopyingAttachments: false,
@@ -369,6 +370,82 @@ describe("resolveNewThreadSubmitDisabledReason", () => {
 
   it("returns no reason when every submission requirement is ready", () => {
     expect(resolveNewThreadSubmitDisabledReason(readyState)).toBeNull();
+  });
+
+  describe("with the model picker hidden", () => {
+    const hidden = { ...readyState, hideModelPicker: true };
+    const unreachableAgent = {
+      providerId: "codex",
+      code: "missing_executable",
+      detail: null,
+    } as const;
+
+    it("sends while the model list is loading", () => {
+      expect(
+        resolveNewThreadBlocker({ ...hidden, isLoadingModels: true }),
+      ).toBeNull();
+    });
+
+    it("sends when the model list failed to load", () => {
+      expect(
+        resolveNewThreadBlocker({
+          ...hidden,
+          modelLoadError: unreachableAgent,
+        }),
+      ).toBeNull();
+    });
+
+    it("sends when the model list failed and no model is selected", () => {
+      expect(
+        resolveNewThreadBlocker({
+          ...hidden,
+          modelLoadError: unreachableAgent,
+          selectedThreadModel: "",
+        }),
+      ).toBeNull();
+    });
+
+    it("sends when no model is selected", () => {
+      expect(
+        resolveNewThreadBlocker({ ...hidden, selectedThreadModel: "" }),
+      ).toBeNull();
+    });
+
+    it.each<
+      [label: string, change: Partial<ResolveNewThreadSubmitDisabledReasonArgs>]
+    >([
+      ["an incomplete environment", { submissionEnvironmentUnavailable: true }],
+      ["an empty prompt", { promptInputEmpty: true }],
+      ["no selected provider", { selectedProviderId: "" }],
+      [
+        "unloaded project defaults",
+        { projectDefaultsUnavailable: true, projectDefaultsStatus: "pending" },
+      ],
+      ["an upload in progress", { isUploading: true }],
+    ])("still blocks on %s", (_label, change) => {
+      expect(resolveNewThreadBlocker({ ...hidden, ...change })).not.toBeNull();
+    });
+  });
+
+  it("still blocks on the model list while the picker is shown", () => {
+    expect(
+      resolveNewThreadBlocker({ ...readyState, isLoadingModels: true })
+        ?.message,
+    ).toBe("Loading models from the selected machine...");
+    expect(
+      resolveNewThreadBlocker({
+        ...readyState,
+        modelLoadError: {
+          providerId: "codex",
+          code: "missing_executable",
+          detail: null,
+        },
+      })?.reason,
+    ).toBe("agent_missing");
+    expect(
+      resolveNewThreadBlocker({ ...readyState, selectedThreadModel: "" })
+        ?.reason,
+    ).toBe("model_selection");
   });
 
   it("allows a selected fallback model after a transient model-list failure", () => {
