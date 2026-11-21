@@ -271,6 +271,26 @@ export function resolveSubmittedExecutionSources(
     : sources;
 }
 
+export function submittedExecutionSources(args: {
+  environment: NewThreadRequest["environment"];
+  hideModelPicker: boolean;
+  composerSources: CreateExecutionInputSources;
+  seededSources: CreateExecutionInputSources;
+}): CreateExecutionInputSources {
+  if (!args.hideModelPicker) {
+    return resolveSubmittedExecutionSources(args.environment, {
+      ...args.composerSources,
+      ...args.seededSources,
+    });
+  }
+  return {
+    ...rememberedDefaultSources(
+      resolveSubmittedExecutionSources(args.environment, args.composerSources),
+    ),
+    ...args.seededSources,
+  };
+}
+
 export function rememberedDefaultSources(
   sources: CreateExecutionInputSources,
 ): CreateExecutionInputSources {
@@ -1943,12 +1963,6 @@ export function NewThreadComposer({
               : "This composer is not ready to submit yet."),
         );
       }
-      const sources: CreateExecutionInputSources = {
-        ...(hideModelPicker
-          ? rememberedDefaultSources(executionInputSources)
-          : executionInputSources),
-        ...seededExecutionInputSources,
-      };
       const request: NewThreadComposerSubmission = {
         projectId,
         providerId: selectedProviderId,
@@ -1959,9 +1973,12 @@ export function NewThreadComposer({
         ...(Object.keys(sessionOptionSelections).length > 0
           ? { sessionOptions: sessionOptionSelections }
           : {}),
-        executionInputSources: hideModelPicker
-          ? sources
-          : resolveSubmittedExecutionSources(submissionEnvironment, sources),
+        executionInputSources: submittedExecutionSources({
+          environment: submissionEnvironment,
+          hideModelPicker,
+          composerSources: executionInputSources,
+          seededSources: seededExecutionInputSources,
+        }),
         environment: submissionEnvironment,
         input,
         ...(sendAt === undefined ? {} : { sendAt }),
