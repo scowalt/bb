@@ -330,6 +330,7 @@ export function registerSystemRoutes(
         settings.summarizeShellCommands ?? current.summarizeShellCommands,
       regenerateTitleOnIdle:
         settings.regenerateTitleOnIdle ?? current.regenerateTitleOnIdle,
+      hideModelPicker: settings.hideModelPicker ?? current.hideModelPicker,
       confirmThreadArchive:
         settings.confirmThreadArchive ?? current.confirmThreadArchive,
       earlyAdopter: settings.earlyAdopter ?? current.earlyAdopter,
