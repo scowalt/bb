@@ -182,6 +182,8 @@ interface GeneralSettingsSectionProps {
   onSummarizeShellCommandsChange: (enabled: boolean) => void;
   regenerateTitleOnIdle: boolean;
   onRegenerateTitleOnIdleChange: (enabled: boolean) => void;
+  hideModelPicker: boolean;
+  onHideModelPickerChange: (enabled: boolean) => void;
   desktopBrowserAvailable: boolean;
   generalSettingsDisabled: boolean;
   managedBranchPrefix: string;
@@ -886,6 +888,8 @@ export function GeneralSettingsSection({
   onResumeThreadsAfterRestartChange,
   regenerateTitleOnIdle,
   onRegenerateTitleOnIdleChange,
+  hideModelPicker,
+  onHideModelPickerChange,
   desktopBrowserAvailable,
   generalSettingsDisabled,
   managedBranchPrefix,
@@ -1029,6 +1033,18 @@ export function GeneralSettingsSection({
               disabled={generalSettingsDisabled}
               onCheckedChange={onRegenerateTitleOnIdleChange}
               aria-label="Regenerate title on thread idle"
+            />
+          </SettingsWithControl>
+
+          <SettingsWithControl
+            label="Hide the model picker"
+            description="Hide the model and reasoning picker in the prompt box. A plugin or bb's defaults pick the model for new threads, and a thread keeps its model."
+          >
+            <Switch
+              checked={hideModelPicker}
+              disabled={generalSettingsDisabled}
+              onCheckedChange={onHideModelPickerChange}
+              aria-label="Hide the model picker"
             />
           </SettingsWithControl>
 
@@ -1506,6 +1522,12 @@ export function SettingsView() {
           onRegenerateTitleOnIdleChange={(enabled) =>
             updateGeneralSettingsMutation.mutate({
               regenerateTitleOnIdle: enabled,
+            })
+          }
+          hideModelPicker={generalSettings.hideModelPicker}
+          onHideModelPickerChange={(enabled) =>
+            updateGeneralSettingsMutation.mutate({
+              hideModelPicker: enabled,
             })
           }
           onReplaySetupGuide={() =>
