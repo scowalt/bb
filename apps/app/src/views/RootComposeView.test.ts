@@ -13,6 +13,7 @@ import { describe, expect, it } from "vitest";
 import type { ReuseThreadOption } from "@/components/pickers/ReuseEnvironmentPicker";
 import {
   resolveNewThreadProjectDefaultsState,
+  rememberedDefaultSources,
   resolveNewThreadBlocker,
   resolveNewThreadSubmitDisabledReason,
   restorePromptDraftAfterOptionChange,
@@ -1420,4 +1421,28 @@ it("offers a core-owned directory attachment for reuse", () => {
       path: "/tmp/attached",
     }),
   ]);
+});
+
+describe("rememberedDefaultSources", () => {
+  it("submits a hidden picker's provider and model as remembered defaults, never as a person's choice", () => {
+    expect(
+      rememberedDefaultSources({
+        providerId: "explicit",
+        model: "explicit",
+        reasoningLevel: "explicit",
+        permissionMode: "explicit",
+      }),
+    ).toEqual({
+      providerId: "client-preference",
+      model: "client-preference",
+      reasoningLevel: "explicit",
+      permissionMode: "explicit",
+    });
+  });
+
+  it("leaves fields the composer did not send unset", () => {
+    expect(rememberedDefaultSources({ permissionMode: "explicit" })).toEqual({
+      permissionMode: "explicit",
+    });
+  });
 });
