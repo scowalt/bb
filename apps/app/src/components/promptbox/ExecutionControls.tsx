@@ -9,6 +9,7 @@ import type {
   SystemExecutionOptionsModelLoadError,
   SystemProvidersQuery,
 } from "@bb/server-contract";
+import { useSystemConfig } from "@/hooks/queries/system-queries";
 import { formatModelLabel } from "@/hooks/useThreadCreationOptions";
 import {
   ModelReasoningPicker,
@@ -90,6 +91,8 @@ export const ExecutionControls = memo(function ExecutionControls({
   handoff,
   disabled,
 }: ExecutionControlsProps) {
+  const hideModelPicker =
+    useSystemConfig().data?.generalSettings.hideModelPicker ?? false;
   const handleServiceTierChange = serviceTier?.onChange ?? (() => {});
   const selectedProviderId = provider.selectedId ?? "";
 
@@ -100,12 +103,13 @@ export const ExecutionControls = memo(function ExecutionControls({
     provider.options.length > 1,
   );
   const showModelPicker =
-    model.isLoading ||
-    model.loadFailed ||
-    model.options.length > 0 ||
-    canSwitchProviders ||
-    selectedProviderId.length > 0 ||
-    handoff !== undefined;
+    !hideModelPicker &&
+    (model.isLoading ||
+      model.loadFailed ||
+      model.options.length > 0 ||
+      canSwitchProviders ||
+      selectedProviderId.length > 0 ||
+      handoff !== undefined);
 
   return (
     <>
