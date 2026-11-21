@@ -79,6 +79,7 @@ export interface ExecutionControlsProps {
   reasoning: ExecutionReasoningConfig;
   handoff?: ModelReasoningPickerHandoff;
   disabled?: boolean;
+  newThread?: boolean;
 }
 
 export const ExecutionControls = memo(function ExecutionControls({
@@ -90,9 +91,11 @@ export const ExecutionControls = memo(function ExecutionControls({
   reasoning,
   handoff,
   disabled,
+  newThread = false,
 }: ExecutionControlsProps) {
   const hideModelPicker =
-    useSystemConfig().data?.generalSettings.hideModelPicker ?? false;
+    (useSystemConfig().data?.generalSettings.hideModelPicker ?? false) &&
+    newThread;
   const handleServiceTierChange = serviceTier?.onChange ?? (() => {});
   const selectedProviderId = provider.selectedId ?? "";
 
