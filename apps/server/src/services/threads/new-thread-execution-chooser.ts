@@ -234,12 +234,20 @@ function applyNewThreadExecutionChoice(
   };
 }
 
+export interface ResolvedThreadCreateExecutionInput {
+  chooserApplied: boolean;
+  input: ThreadCreateServiceRequestInput;
+}
+
 export async function resolveThreadCreateExecutionInput(
   deps: ChooserDeps,
   args: ChooseNewThreadExecutionArgs,
-): Promise<ThreadCreateServiceRequestInput> {
+): Promise<ResolvedThreadCreateExecutionInput> {
   const choice = await chooseNewThreadExecution(deps, args);
   return choice === null
-    ? args.input
-    : applyNewThreadExecutionChoice(deps, args.input, choice);
+    ? { chooserApplied: false, input: args.input }
+    : {
+        chooserApplied: true,
+        input: applyNewThreadExecutionChoice(deps, args.input, choice),
+      };
 }

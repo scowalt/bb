@@ -54,6 +54,7 @@ export interface ThreadCreateServiceRequest extends Omit<
   "environment" | "pluginMetadata" | "providerId"
 > {
   environment: EnvironmentArgs | ProviderEnvironmentArgs;
+  executionChosenByPlugin?: boolean;
   pluginMetadata: { pluginId: string; metadata: JsonObject } | null;
   providerId: string;
   parentNotifications: ThreadParentNotifications;
