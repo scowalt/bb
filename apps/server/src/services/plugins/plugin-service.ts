@@ -38,6 +38,7 @@ import {
 } from "@get-bb/plugin-sdk";
 import {
   enforcePluginCliOutputLimit,
+  NEW_THREAD_EXECUTION_CHOOSER_TIMEOUT_MS,
   pluginCliFailureResult,
   normalizePluginAgentConfiguration,
   normalizeRpcJsonResult,
@@ -1612,6 +1613,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
     executionChooser: {
       getChooser: getNewThreadExecutionChooser,
       invokeChooser: invokeOwned,
+      timeoutMs: NEW_THREAD_EXECUTION_CHOOSER_TIMEOUT_MS,
     },
 
     environmentProviders: {

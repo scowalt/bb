@@ -92,7 +92,7 @@ export function loadThreadExecutionDefaults(
   });
 }
 
-function isSelectableProvider(
+export function isSelectableProvider(
   registry: AppDeps["providerRegistry"],
   providerId: string,
 ): boolean {
