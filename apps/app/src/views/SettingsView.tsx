@@ -1052,7 +1052,7 @@ export function GeneralSettingsSection({
 
           <SettingsWithControl
             label="Hide the model picker"
-            description="Hide the model and reasoning picker in the prompt box. A plugin or bb's defaults pick the model for new threads, and a thread keeps its model."
+            description="Hide the model and reasoning picker when starting a thread. A plugin or bb's defaults pick the model for new threads. You can still switch an existing thread's model."
           >
             <Switch
               checked={hideModelPicker}

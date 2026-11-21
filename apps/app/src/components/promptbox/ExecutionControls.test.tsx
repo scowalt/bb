@@ -92,20 +92,32 @@ describe("ExecutionControls", () => {
     expect(screen.queryByTitle("Claude Code")).not.toBeNull();
   });
 
-  it("hides the whole picker when the hide-the-model-picker setting is on", () => {
-    renderExecutionControls(makeExecutionControlsProps(vi.fn()), {
-      hideModelPicker: true,
-    });
+  it("hides the whole picker in a new-thread composer when the hide-the-model-picker setting is on", () => {
+    renderExecutionControls(
+      { ...makeExecutionControlsProps(vi.fn()), newThread: true },
+      { hideModelPicker: true },
+    );
 
     expect(
       screen.queryByRole("button", { name: "Provider, model and reasoning" }),
     ).toBeNull();
   });
 
-  it("shows the picker when the hide-the-model-picker setting is off", () => {
+  it("keeps the picker in an existing thread's composer so its model can be switched", () => {
     renderExecutionControls(makeExecutionControlsProps(vi.fn()), {
-      hideModelPicker: false,
+      hideModelPicker: true,
     });
+
+    expect(
+      screen.queryByRole("button", { name: "Provider, model and reasoning" }),
+    ).not.toBeNull();
+  });
+
+  it("shows the picker when the hide-the-model-picker setting is off", () => {
+    renderExecutionControls(
+      { ...makeExecutionControlsProps(vi.fn()), newThread: true },
+      { hideModelPicker: false },
+    );
 
     expect(
       screen.queryByRole("button", { name: "Provider, model and reasoning" }),
