@@ -2,6 +2,8 @@
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { defaultAppSettings } from "@bb/domain";
+import { systemConfigQueryKey } from "@/hooks/queries/query-keys";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import {
   ExecutionControls,
@@ -41,8 +43,19 @@ function makeExecutionControlsProps(
   };
 }
 
-function renderExecutionControls(props: ExecutionControlsProps) {
-  const { wrapper } = createQueryClientTestHarness();
+function renderExecutionControls(
+  props: ExecutionControlsProps,
+  options: { hideModelPicker?: boolean } = {},
+) {
+  const { queryClient, wrapper } = createQueryClientTestHarness();
+  if (options.hideModelPicker !== undefined) {
+    queryClient.setQueryData(systemConfigQueryKey(), {
+      generalSettings: {
+        ...defaultAppSettings,
+        hideModelPicker: options.hideModelPicker,
+      },
+    });
+  }
   return render(<ExecutionControls {...props} />, { wrapper });
 }
 
@@ -77,6 +90,26 @@ describe("ExecutionControls", () => {
     );
 
     expect(screen.queryByTitle("Claude Code")).not.toBeNull();
+  });
+
+  it("hides the whole picker when the hide-the-model-picker setting is on", () => {
+    renderExecutionControls(makeExecutionControlsProps(vi.fn()), {
+      hideModelPicker: true,
+    });
+
+    expect(
+      screen.queryByRole("button", { name: "Provider, model and reasoning" }),
+    ).toBeNull();
+  });
+
+  it("shows the picker when the hide-the-model-picker setting is off", () => {
+    renderExecutionControls(makeExecutionControlsProps(vi.fn()), {
+      hideModelPicker: false,
+    });
+
+    expect(
+      screen.queryByRole("button", { name: "Provider, model and reasoning" }),
+    ).not.toBeNull();
   });
 
   it("keeps showing the known model when model options fail to load", () => {
