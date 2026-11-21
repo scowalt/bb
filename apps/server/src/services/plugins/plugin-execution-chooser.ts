@@ -13,6 +13,7 @@ export interface PluginExecutionChooserBridge {
     label: string,
     run: () => Promise<T>,
   ): Promise<PluginHookInvocation<T>>;
+  readonly timeoutMs: number;
 }
 
 let bridge: PluginExecutionChooserBridge | undefined;
