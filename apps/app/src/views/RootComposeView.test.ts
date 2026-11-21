@@ -1428,9 +1428,9 @@ describe("submittedExecutionSources", () => {
   const newMachine = {
     type: "provider",
     environmentProviderId: "cloud",
-    machine: { type: "new" },
+    machine: { type: "new", machineProviderId: "cloud-vm", inputs: null },
     inputs: null,
-  } as unknown as Parameters<typeof submittedExecutionSources>[0]["environment"];
+  } satisfies Parameters<typeof submittedExecutionSources>[0]["environment"];
 
   it("keeps the picker's explicit choice when the picker is shown", () => {
     expect(
