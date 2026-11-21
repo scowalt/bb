@@ -272,6 +272,18 @@ export function resolveSubmittedExecutionSources(
     : sources;
 }
 
+export function rememberedDefaultSources(
+  sources: CreateExecutionInputSources,
+): CreateExecutionInputSources {
+  return {
+    ...sources,
+    ...(sources.providerId === undefined
+      ? {}
+      : { providerId: "client-preference" }),
+    ...(sources.model === undefined ? {} : { model: "client-preference" }),
+  };
+}
+
 export interface NewThreadComposerSubmission extends Omit<
   NewThreadRequest,
   "model"
@@ -1924,7 +1936,9 @@ export function NewThreadComposer({
         );
       }
       const sources: CreateExecutionInputSources = {
-        ...executionInputSources,
+        ...(hideModelPicker
+          ? rememberedDefaultSources(executionInputSources)
+          : executionInputSources),
         ...seededExecutionInputSources,
       };
       const request: NewThreadComposerSubmission = {
@@ -1937,10 +1951,9 @@ export function NewThreadComposer({
         ...(Object.keys(sessionOptionSelections).length > 0
           ? { sessionOptions: sessionOptionSelections }
           : {}),
-        executionInputSources: resolveSubmittedExecutionSources(
-          submissionEnvironment,
-          sources,
-        ),
+        executionInputSources: hideModelPicker
+          ? sources
+          : resolveSubmittedExecutionSources(submissionEnvironment, sources),
         environment: submissionEnvironment,
         input,
         ...(sendAt === undefined ? {} : { sendAt }),
