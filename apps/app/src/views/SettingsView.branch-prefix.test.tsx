@@ -14,6 +14,8 @@ afterEach(cleanup);
 function renderSection(overrides?: {
   terminalCopyOnSelect?: boolean;
   onTerminalCopyOnSelectChange?: (enabled: boolean) => void;
+  hideModelPicker?: boolean;
+  onHideModelPickerChange?: (enabled: boolean) => void;
   generalSettingsDisabled?: boolean;
   managedBranchPrefix?: string;
   onManagedBranchPrefixChange?: (prefix: string) => Promise<void> | void;
@@ -33,6 +35,8 @@ function renderSection(overrides?: {
       onSummarizeShellCommandsChange={vi.fn()}
       regenerateTitleOnIdle={false}
       onRegenerateTitleOnIdleChange={vi.fn()}
+      hideModelPicker={overrides?.hideModelPicker ?? false}
+      onHideModelPickerChange={overrides?.onHideModelPickerChange ?? vi.fn()}
       desktopBrowserAvailable={false}
       generalSettingsDisabled={overrides?.generalSettingsDisabled ?? false}
       terminalCopyOnSelect={overrides?.terminalCopyOnSelect ?? true}
@@ -89,6 +93,28 @@ describe("terminal copy-on-select setting", () => {
     });
     fireEvent.click(screen.getByRole("switch", { name: "Copy on select" }));
     expect(onChange).not.toHaveBeenCalled();
+  });
+});
+
+describe("hide the model picker setting", () => {
+  it("is off by default and saves the opt-in", () => {
+    const onChange = vi.fn();
+    renderSection({ onHideModelPickerChange: onChange });
+    const toggle = screen.getByRole("switch", {
+      name: "Hide the model picker",
+    });
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    fireEvent.click(toggle);
+    expect(onChange).toHaveBeenCalledWith(true);
+  });
+
+  it("shows the saved value", () => {
+    renderSection({ hideModelPicker: true });
+    expect(
+      screen
+        .getByRole("switch", { name: "Hide the model picker" })
+        .getAttribute("aria-checked"),
+    ).toBe("true");
   });
 });
 

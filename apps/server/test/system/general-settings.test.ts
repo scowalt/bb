@@ -357,3 +357,33 @@ it("reports working agents and the saved quit preference in quit status", async 
     });
   });
 });
+
+it("persists hideModelPicker and preserves it for older clients", async () => {
+  await withTestHarness(async (harness) => {
+    const put = (settings: object) =>
+      harness.app.request("/api/v1/settings/general", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(settings),
+      });
+    expect(getAppSettings(harness.db).hideModelPicker).toBe(false);
+    expect(
+      (await put({ ...defaultAppSettings, hideModelPicker: true })).status,
+    ).toBe(200);
+    expect(getAppSettings(harness.db).hideModelPicker).toBe(true);
+    const { hideModelPicker, ...legacy } = defaultAppSettings;
+    expect(hideModelPicker).toBe(false);
+    expect((await put({ ...legacy, showKeyboardHints: false })).status).toBe(
+      200,
+    );
+    const config = systemConfigResponseSchema.parse(
+      await readJson(await harness.app.request("/api/v1/system/config")),
+    );
+    expect(config.generalSettings.hideModelPicker).toBe(true);
+    expect(config.generalSettings.showKeyboardHints).toBe(false);
+    expect(
+      (await put({ ...defaultAppSettings, hideModelPicker: false })).status,
+    ).toBe(200);
+    expect(getAppSettings(harness.db).hideModelPicker).toBe(false);
+  });
+});
