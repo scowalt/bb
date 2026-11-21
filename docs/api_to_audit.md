@@ -787,6 +787,44 @@ Docs: `providers.md`.
 6. Decide whether the context and entry types should stabilize with the method
    or remain experimental for a longer compatibility window.
 
+## `bb.providers.experimental_chooseNewThreadExecution`
+
+Registers the one chooser that picks the provider, model, and reasoning level
+of a new thread. Thread creation (`createThreadFromRequest`, behind the app's
+composers, `bb thread spawn`, `threads.spawn`, and plugin and automation
+creates) resolves the thread's environment and machine, then asks the chooser
+once, with the project, machine, origin, parent, and what the request named
+(`requested`) and where each value came from (`sources`). It skips forks and
+handoffs (`originKind` set), because a provider session cannot continue on
+another provider. A choice replaces the request's provider, model, and
+reasoning level and counts as explicit, so the defaults ladder never overrides
+it. When the choice moves the thread to a provider other than the one the
+request named, or the request named none, the request's session options and
+service tier are dropped and its permission mode is lowered to one the chosen
+provider supports. Core logs each applied choice and its reason.
+
+The chooser has 3 seconds. A throw, a timeout, `null`, a malformed choice, a
+choice naming an unknown, disabled, or unavailable provider, or a reasoning
+level the provider does not support creates the thread as if no chooser were
+registered. The server holds at most one chooser: a second registration throws
+and names the plugin that holds the first. It stays until that plugin reloads
+or is disabled. Core callers: every thread create takes this path, so the
+Hide the model picker general setting (`hideModelPicker`) relies on it.
+
+Docs: `providers.md`.
+
+**Audit before stabilizing.**
+
+1. Decide whether a second plugin should be able to chain behind the first
+   instead of being refused.
+2. Confirm 3 seconds is the right box for choosers that read usage caches and
+   whether the request needs the project's remembered defaults.
+3. Decide whether a model the provider's catalog does not list should refuse
+   the choice here rather than at provider start.
+4. Decide whether follow-up turns and queued messages need the same seam.
+5. Decide whether the request and choice types should stabilize with the
+   method or remain experimental for a longer compatibility window.
+
 ## Compatibility windows
 
 Open windows left by the SDK 0.4.16 stabilization renames. The bb-app
