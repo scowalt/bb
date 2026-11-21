@@ -50,6 +50,7 @@ interface ResolveRequestedCreateExecutionValueArgs<TValue> {
 
 function shouldRememberProjectExecutionDefaults(args: {
   environment: ThreadCreateServiceRequest["environment"];
+  executionChosenByPlugin?: ThreadCreateServiceRequest["executionChosenByPlugin"];
   origin: ThreadCreateServiceRequest["origin"];
   originKind?: ThreadCreateServiceRequest["originKind"];
 }): boolean {
@@ -57,6 +58,7 @@ function shouldRememberProjectExecutionDefaults(args: {
   // a fresh default-shaping event. Don't overwrite the project's stored
   // execution defaults with the picker selections made for that single thread.
   if (args.environment.type === "reuse") return false;
+  if (args.executionChosenByPlugin === true) return false;
   if (args.originKind !== null) return false;
   return args.origin === "app";
 }

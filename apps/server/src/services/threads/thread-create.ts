@@ -755,10 +755,11 @@ export async function createThreadFromRequest(
   if (childHostId !== null) {
     await ensureHostSessionReadyForWork(deps, { hostId: childHostId });
   }
-  const executionInput = await resolveThreadCreateExecutionInput(deps, {
-    hostId: childHostId,
-    input: requestInput,
-  });
+  const { chooserApplied, input: executionInput } =
+    await resolveThreadCreateExecutionInput(deps, {
+      hostId: childHostId,
+      input: requestInput,
+    });
   const {
     defaultModel: inheritedDefaultModel,
     providerId,
@@ -780,6 +781,7 @@ export async function createThreadFromRequest(
   } = executionInput;
   const request: ThreadCreateServiceRequest = {
     ...requestRest,
+    ...(chooserApplied ? { executionChosenByPlugin: true } : {}),
     ...(hierarchyParentThreadId
       ? { parentThreadId: hierarchyParentThreadId }
       : {}),
