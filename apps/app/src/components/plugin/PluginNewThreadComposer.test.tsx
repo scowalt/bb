@@ -45,6 +45,7 @@ import type {
 } from "@bb/server-contract";
 import {
   NewThreadComposer,
+  type NewThreadComposerSubmission,
   type NewThreadComposerState,
 } from "@/components/promptbox/NewThreadComposer";
 import { setComposerSelectionSettleTimeoutForTest } from "@/components/promptbox/composer-selection-settle";
@@ -114,6 +115,12 @@ function render(element: ReactNode) {
 
 const mocks = vi.hoisted(() => ({
   unknownReasoning: false,
+  hideModelPicker: false,
+  modelLoadError: null as null | {
+    providerId: string;
+    code: string;
+    detail: null;
+  },
   promptBoxProps: [] as Array<Record<string, any>>,
   copyAttachments: vi.fn(),
   uploadAttachment: vi.fn(),
@@ -329,7 +336,10 @@ vi.mock("@/hooks/queries/system-queries", () => ({
   useSystemConfig: () => ({
     data: {
       primaryHostId: "host_1",
-      generalSettings: defaultAppSettings,
+      generalSettings: {
+        ...defaultAppSettings,
+        hideModelPicker: mocks.hideModelPicker,
+      },
       serverAccess: {
         providers: [
           {
@@ -418,7 +428,7 @@ vi.mock("@/hooks/queries/system-queries", () => ({
               },
             ],
             selectedOnlyModels: [],
-            modelLoadError: null,
+            modelLoadError: mocks.modelLoadError,
           },
           isLoading: false,
           isError: false,
@@ -769,6 +779,8 @@ describe("PluginNewThreadComposer seeding", () => {
     mocks.closeTerminal.mockClear();
     mocks.modelSessionOptions = undefined;
     mocks.unknownReasoning = false;
+    mocks.hideModelPicker = false;
+    mocks.modelLoadError = null;
     mocks.promptBoxProps.length = 0;
     mocks.promptHistoryQueryOptions.length = 0;
     mocks.copyAttachments.mockReset();
@@ -1261,6 +1273,48 @@ describe("PluginNewThreadComposer seeding", () => {
     ]);
   });
 
+  describe("when the model list failed to load", () => {
+    const unreachableAgent = {
+      providerId: "claude-code",
+      code: "missing_executable",
+      detail: null,
+    } as const;
+
+    it("blocks the send on a model-list error while the picker is shown", async () => {
+      mocks.modelLoadError = unreachableAgent;
+      renderComposer(STORED_REQUEST, () => undefined, "load-error-shown");
+
+      await waitFor(() => {
+        expect(latestPromptBoxProps().disabled).toBe(true);
+      });
+    });
+
+    it("sends despite a model-list error when the picker is hidden", async () => {
+      const submitted: NewThreadComposerSubmission[] = [];
+      mocks.hideModelPicker = true;
+      mocks.modelLoadError = unreachableAgent;
+      renderComposer(
+        STORED_REQUEST,
+        (request) => {
+          submitted.push(request);
+        },
+        "load-error-hidden",
+      );
+
+      await waitFor(() => {
+        expect(latestPromptBoxProps().disabled).toBe(false);
+      });
+      await act(async () => {
+        await latestPromptBoxProps().onSubmit();
+      });
+      expect(submitted).toHaveLength(1);
+      expect(submitted[0]).toMatchObject({
+        providerId: STORED_REQUEST.providerId,
+        model: STORED_REQUEST.model,
+      });
+    });
+  });
+
   it("binds plugin draft actions to the hosted composer instance", async () => {
     renderComposer(STORED_REQUEST, () => undefined, "host-binding");
 
@@ -1691,7 +1745,7 @@ describe("PluginNewThreadComposer seeding", () => {
         environmentProviderId: "git-worktree",
       }),
     ];
-    const submitted: NewThreadRequest[] = [];
+    const submitted: NewThreadComposerSubmission[] = [];
     render(
       <Provider>
         <MemoryRouter>
@@ -2069,12 +2123,12 @@ describe("PluginNewThreadComposer seeding", () => {
 
   it("keeps a seeded fork's exact reuse selection while the sidebar bootstrap settles", async () => {
     mocks.sidebarNavigationSettled = false;
-    const submitted: NewThreadRequest[] = [];
+    const submitted: NewThreadComposerSubmission[] = [];
     const seed = {
       initialPrompt: "fork prompt",
       environment: { type: "reuse" as const, environmentId: "env-source" },
     };
-    const onSubmit = (request: NewThreadRequest) => {
+    const onSubmit = (request: NewThreadComposerSubmission) => {
       submitted.push(request);
     };
     const element = () => (
