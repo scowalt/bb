@@ -82,6 +82,7 @@ import type {
   PluginHookRegistration,
 } from "./plugin-hook-registry.js";
 import type { PluginEnvironmentProviderRecord } from "./plugin-environment-provider-registry.js";
+import type { PluginExecutionChooserRegistration } from "./plugin-execution-chooser.js";
 import type { PluginMachineProviderRecord } from "./plugin-machine-provider-registry.js";
 import {
   isPluginSdkRangeSatisfied,
@@ -571,6 +572,16 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
     return undefined;
   }
 
+  function findNewThreadExecutionChooserOwner(
+    excludePluginId: string,
+  ): string | undefined {
+    for (const [otherId, plugin] of loaded) {
+      if (otherId === excludePluginId) continue;
+      if (plugin.handle.newThreadExecutionChooser !== null) return otherId;
+    }
+    return undefined;
+  }
+
   const serviceContext = new AsyncLocalStorage<ServiceInstance>();
 
   function runService(id: string, service: ServiceRuntime): void {
@@ -838,6 +849,18 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
       }
     }
     return registrations;
+  }
+
+  function getNewThreadExecutionChooser():
+    | PluginExecutionChooserRegistration
+    | undefined {
+    for (const [id, plugin] of loaded) {
+      const chooser = plugin.handle.newThreadExecutionChooser;
+      if (chooser !== null) {
+        return ownedRecord({ pluginId: id, chooser }, plugin);
+      }
+    }
+    return undefined;
   }
 
   function resolveRegisteredProviderIcon(
@@ -1943,6 +1966,8 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
         reportNeedsConfiguration(row.id, message);
       },
       isAgentToolNameTaken: (name) => findAgentToolOwner(name, row.id),
+      findNewThreadExecutionChooserOwner: () =>
+        findNewThreadExecutionChooserOwner(row.id),
       isEnvironmentProviderIdTaken: (id) => {
         for (const [pluginId, plugin] of loaded) {
           if (
@@ -2385,6 +2410,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
     isSuppressedBySafeMode,
     listPluginCodeOwners,
     listPluginHooks,
+    getNewThreadExecutionChooser,
     listPluginEnvironmentCompositions,
     listPluginEnvironmentProviders,
     getPluginEnvironmentProvider,
