@@ -250,22 +250,34 @@ function validateProviderPermissionMode(
   );
 }
 
+export function providerSupportsReasoningLevel(
+  registry: ProviderRegistryService,
+  providerId: string,
+  reasoningLevel: ReasoningLevel,
+): boolean {
+  const supportedLevels = getSupportedReasoningLevelsForProvider(
+    registry,
+    providerId,
+  );
+  return (
+    supportedLevels.length === 0 ||
+    supportedLevels.includes(reasoningLevel) ||
+    !isStandardReasoningLevel(reasoningLevel)
+  );
+}
+
 function validateProviderReasoningLevel(
   registry: ProviderRegistryService,
   providerId: string,
   reasoningLevel: ReasoningLevel,
 ): void {
+  if (providerSupportsReasoningLevel(registry, providerId, reasoningLevel)) {
+    return;
+  }
   const supportedLevels = getSupportedReasoningLevelsForProvider(
     registry,
     providerId,
   );
-  if (
-    supportedLevels.length === 0 ||
-    supportedLevels.includes(reasoningLevel) ||
-    !isStandardReasoningLevel(reasoningLevel)
-  ) {
-    return;
-  }
 
   throw new ProviderCapabilityValidationError(
     400,

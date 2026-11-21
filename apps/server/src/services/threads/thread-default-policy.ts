@@ -157,7 +157,7 @@ function requireHostEnvironmentId(
   throw new Error("Host environment is missing hostId");
 }
 
-function resolveSupportedPermissionMode(
+export function resolveSupportedPermissionMode(
   registry: ProviderRegistryService,
   args: ResolveSupportedPermissionModeArgs,
 ): PermissionMode {
