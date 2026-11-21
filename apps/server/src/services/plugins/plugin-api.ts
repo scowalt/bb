@@ -62,6 +62,7 @@ import type {
   PluginMentionSearchContext,
   PluginMentionTrigger,
   PluginMachines,
+  NewThreadExecutionChooser,
   PluginAiServices,
   PluginProviderDeclaration,
   ExperimentalPluginProviderEnvContext,
@@ -113,6 +114,7 @@ import {
   providerDeclarationIconRefusal,
   providerIconRefusalMessage,
   undeclaredIconProblem,
+  validateNewThreadExecutionChooserRegistration,
   validateProviderEnvContribution,
   validateScheduleRegistration,
   validateSettingsUpdate,
@@ -309,6 +311,7 @@ export interface PluginApiHandle {
   >;
   agentConfigurationProvider: PluginAgentConfigurationProvider | null;
   instructionProvider: PluginInstructionProvider | null;
+  newThreadExecutionChooser: NewThreadExecutionChooser | null;
   mentionProviders: PluginMentionProviderRecord[];
   activate(): void;
   closeWebSockets(): void;
@@ -527,6 +530,7 @@ export function createPluginApi(options: {
   settingsChanged: () => void;
   reportNeedsConfiguration: (message: string) => void;
   isAgentToolNameTaken: (name: string) => string | undefined;
+  findNewThreadExecutionChooserOwner: () => string | undefined;
   isEnvironmentProviderIdTaken: (id: string) => string | undefined;
   isMachineProviderIdTaken: (id: string) => string | undefined;
   reportRegistrationProblem: (message: string) => void;
@@ -980,6 +984,7 @@ export function createPluginApi(options: {
   let agentConfigurationProvider: PluginAgentConfigurationProvider | null =
     null;
   let instructionProvider: PluginInstructionProvider | null = null;
+  let newThreadExecutionChooser: NewThreadExecutionChooser | null = null;
 
   const agents: PluginAgents = {
     configure(provider) {
@@ -1253,6 +1258,15 @@ export function createPluginApi(options: {
       );
       providerEnvHealthResolvers.set(providerId, resolve);
     },
+    experimental_chooseNewThreadExecution(chooser) {
+      assertLive();
+      validateNewThreadExecutionChooserRegistration({
+        chooser,
+        heldByThisPlugin: newThreadExecutionChooser !== null,
+        heldByOtherPlugin: options.findNewThreadExecutionChooserOwner(),
+      });
+      newThreadExecutionChooser = chooser;
+    },
   };
 
   const experimental_environments: PluginEnvironments = {
@@ -1484,6 +1498,9 @@ export function createPluginApi(options: {
     },
     get instructionProvider() {
       return instructionProvider;
+    },
+    get newThreadExecutionChooser() {
+      return newThreadExecutionChooser;
     },
     mentionProviders,
     activate() {

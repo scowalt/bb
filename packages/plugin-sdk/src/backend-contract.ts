@@ -1836,7 +1836,70 @@ export interface PluginProviders {
       | null
       | Promise<ExperimentalPluginProviderEnvHealth | null>,
   ): void;
+  /**
+   * Register the one chooser that picks the provider, model, and reasoning
+   * level of a new thread (see docs/api_to_audit.md before relying on it).
+   * Core calls it once per thread create that is not a fork or handoff, after
+   * the thread's environment is resolved and before the provider and model
+   * defaults are. A returned choice replaces what the request named; a
+   * `null` answer, a throw, a call that outlasts 3 seconds, or a choice that
+   * names an unknown, disabled, or unavailable provider (or a reasoning level
+   * the provider does not support) creates the thread as if no chooser were
+   * registered. A choice that moves the thread to another provider than the
+   * request named, or the request named none, drops the request's session
+   * options and service tier and lowers its permission mode to one the chosen
+   * provider supports. At most one chooser is registered server-wide: a second
+   * registration, from this plugin or another, throws and names the plugin
+   * that holds it. The chooser stays registered until the plugin is reloaded
+   * or disabled.
+   */
+  experimental_chooseNewThreadExecution(
+    chooser: NewThreadExecutionChooser,
+  ): void;
 }
+
+/**
+ * What a thread create named for its provider, model, and reasoning level, and
+ * where each value came from. `requested` is null for a value the request left
+ * to bb. `sources` is `explicit` for a user's choice and `client-preference`
+ * for a remembered client default, and null when `requested` is null.
+ */
+export interface NewThreadExecutionRequest {
+  projectId: string;
+  /** The machine the thread will run on, when creation already knows it. */
+  hostId: string | null;
+  origin: ThreadCreateOrigin;
+  originPluginId: string | null;
+  parentThreadId: string | null;
+  requested: {
+    providerId: string | null;
+    model: string | null;
+    reasoningLevel: ReasoningLevel | null;
+  };
+  sources: {
+    providerId: ExecutionInputFieldSource | null;
+    model: ExecutionInputFieldSource | null;
+    reasoningLevel: ExecutionInputFieldSource | null;
+  };
+}
+
+export interface NewThreadExecutionChoice {
+  providerId: string;
+  model: string;
+  reasoningLevel: ReasoningLevel;
+  /** One line saying why, for logs and diagnostics. */
+  reason: string;
+}
+
+/**
+ * Answers one thread create. `signal` aborts when the 3 second time box
+ * elapses. Return `null` to leave the create as it would run without a
+ * chooser.
+ */
+export type NewThreadExecutionChooser = (
+  request: NewThreadExecutionRequest,
+  context: { signal: AbortSignal },
+) => NewThreadExecutionChoice | null | Promise<NewThreadExecutionChoice | null>;
 
 /**
  * `threadId` and `projectId` are `null` when bb resolves the environment for a

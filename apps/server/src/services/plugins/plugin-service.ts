@@ -172,6 +172,7 @@ import {
   DEFAULT_PLUGIN_HOOK_TIMEOUT_MS,
   type PluginHookProvider,
 } from "./plugin-hook-registry.js";
+import type { PluginExecutionChooserBridge } from "./plugin-execution-chooser.js";
 import type { PluginEnvironmentProviderBridge } from "./plugin-environment-provider-registry.js";
 import { createPluginRegistration } from "./plugin-registration.js";
 import {
@@ -275,6 +276,8 @@ export interface PluginService {
   events: PluginThreadEventEmitter;
   /** The hook chain the dispatch pipeline consults; registered in createApp. */
   hooks: PluginHookProvider;
+  /** The new-thread execution chooser thread creation consults; registered in createApp. */
+  executionChooser: PluginExecutionChooserBridge;
   environmentProviders: PluginEnvironmentProviderBridge;
   machineProviders: PluginMachineProviderBridge;
   serverAccessProviders: import("./plugin-server-access-registry.js").ServerAccessBridge;
@@ -726,6 +729,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
     isSuppressedBySafeMode,
     listPluginCodeOwners,
     listPluginHooks,
+    getNewThreadExecutionChooser,
     listPluginEnvironmentCompositions,
     listPluginEnvironmentProviders,
     getPluginEnvironmentProvider,
@@ -1592,6 +1596,11 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
       listHooks: listPluginHooks,
       invokeHook: invokeOwned,
       decisionTimeoutMs: DEFAULT_PLUGIN_HOOK_TIMEOUT_MS,
+    },
+
+    executionChooser: {
+      getChooser: getNewThreadExecutionChooser,
+      invokeChooser: invokeOwned,
     },
 
     environmentProviders: {
