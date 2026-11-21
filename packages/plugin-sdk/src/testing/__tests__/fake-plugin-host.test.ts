@@ -2140,6 +2140,97 @@ describe("providers.experimental_contributeEnv", () => {
   });
 });
 
+describe("providers.experimental_chooseNewThreadExecution", () => {
+  const request = {
+    projectId: "project-1",
+    hostId: "host-1",
+    origin: "cli" as const,
+    originPluginId: null,
+    parentThreadId: null,
+    requested: { providerId: null, model: null, reasoningLevel: null },
+    sources: { providerId: null, model: null, reasoningLevel: null },
+  };
+
+  it("answers with the registered chooser's validated choice", async () => {
+    const { bb, harness } = createFakePluginHost();
+    const seen: unknown[] = [];
+    bb.providers.experimental_chooseNewThreadExecution((asked) => {
+      seen.push(asked);
+      return {
+        providerId: "pi",
+        model: "claude-bridge/claude-opus-5-5",
+        reasoningLevel: "high",
+        reason: "Opus has the lower weekly pace",
+      };
+    });
+
+    await expect(
+      harness.behavior.chooseNewThreadExecution(request),
+    ).resolves.toEqual({
+      providerId: "pi",
+      model: "claude-bridge/claude-opus-5-5",
+      reasoningLevel: "high",
+      reason: "Opus has the lower weekly pace",
+    });
+    expect(seen).toEqual([request]);
+    expect(harness.registrations.newThreadExecutionChooser).not.toBeNull();
+  });
+
+  it("answers null with no chooser, for a null answer, a malformed choice, and a throw", async () => {
+    const none = createFakePluginHost();
+    await expect(
+      none.harness.behavior.chooseNewThreadExecution(request),
+    ).resolves.toBeNull();
+
+    const declined = createFakePluginHost();
+    declined.bb.providers.experimental_chooseNewThreadExecution(() => null);
+    await expect(
+      declined.harness.behavior.chooseNewThreadExecution(request),
+    ).resolves.toBeNull();
+
+    const malformed = createFakePluginHost();
+    malformed.bb.providers.experimental_chooseNewThreadExecution(
+      () =>
+        ({
+          providerId: "pi",
+          model: "",
+          reasoningLevel: "high",
+          reason: "no model",
+        }) as never,
+    );
+    await expect(
+      malformed.harness.behavior.chooseNewThreadExecution(request),
+    ).resolves.toBeNull();
+    expect(malformed.harness.inspection.logEntries.at(-1)).toMatchObject({
+      level: "warn",
+    });
+
+    const throwing = createFakePluginHost();
+    throwing.bb.providers.experimental_chooseNewThreadExecution(() => {
+      throw new Error("usage cache unreadable");
+    });
+    await expect(
+      throwing.harness.behavior.chooseNewThreadExecution(request),
+    ).resolves.toBeNull();
+    expect(throwing.harness.inspection.logEntries.at(-1)).toMatchObject({
+      level: "warn",
+    });
+  });
+
+  it("rejects a second registration and a non-function", () => {
+    const { bb } = createFakePluginHost();
+    bb.providers.experimental_chooseNewThreadExecution(() => null);
+    expect(() =>
+      bb.providers.experimental_chooseNewThreadExecution(() => null),
+    ).toThrow("a new-thread execution chooser is already registered");
+    expect(() =>
+      bb.providers.experimental_chooseNewThreadExecution(
+        "pi" as unknown as never,
+      ),
+    ).toThrow("requires a chooser function");
+  });
+});
+
 describe("experimental_aiServices.register", () => {
   const complete = async (prompt: string) => `echo: ${prompt}`;
 

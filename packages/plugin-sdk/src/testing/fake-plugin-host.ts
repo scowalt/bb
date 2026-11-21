@@ -47,6 +47,8 @@ import {
   validatePluginAiServiceDeclaration,
   validatePluginProviderDeclaration,
   validatePluginProviderEnvEntries,
+  validateNewThreadExecutionChoice,
+  validateNewThreadExecutionChooserRegistration,
   validateProviderEnvContribution,
   validateRpcValue,
   validateScheduleRegistration,
@@ -93,6 +95,9 @@ import type {
   PluginMentionProviderRegistration,
   PluginMentionSearchContext,
   PluginMentionTrigger,
+  NewThreadExecutionChoice,
+  NewThreadExecutionChooser,
+  NewThreadExecutionRequest,
   PluginAiServiceDeclaration,
   PluginAiServices,
   PluginProviderDeclaration,
@@ -294,6 +299,8 @@ export interface FakePluginRegistrations {
   instructionProvider:
     | ((ctx: { threadId: string; projectId: string }) => string | null)
     | null;
+  /** Chooser from `bb.providers.experimental_chooseNewThreadExecution`, or null when none registered. */
+  newThreadExecutionChooser: NewThreadExecutionChooser | null;
   threadEventHandlers: Record<PluginThreadEventName, number>;
   /** The handler registered per hook by `bb.experimental_hooks.on`. */
   hooks: {
@@ -508,6 +515,16 @@ export interface FakePluginBehaviorDrivers {
     providerId: string,
     context: ExperimentalPluginProviderEnvHealthContext,
   ): Promise<ExperimentalPluginProviderEnvHealth | null>;
+  /**
+   * Ask the registered new-thread execution chooser the way a thread create
+   * does: a malformed choice and a chooser that throws are logged and answer
+   * `null`, as does having no chooser. The 3 second time box is not applied;
+   * `signal` defaults to one that never aborts.
+   */
+  chooseNewThreadExecution(
+    request: NewThreadExecutionRequest,
+    options?: { signal?: AbortSignal },
+  ): Promise<NewThreadExecutionChoice | null>;
 }
 
 /** Reload/shutdown controls, kept separate from behavior and inspection. */
@@ -1025,6 +1042,7 @@ function createFakePluginHostInternal(
   let instructionProvider:
     | ((ctx: { threadId: string; projectId: string }) => string | null)
     | null = null;
+  let newThreadExecutionChooser: NewThreadExecutionChooser | null = null;
   function registerProviderDeclaration(
     declaration: PluginProviderDeclaration,
   ): { dispose(): void } {
@@ -1548,6 +1566,15 @@ function createFakePluginHostInternal(
       );
       providerEnvHealthResolvers.set(providerId, resolve);
     },
+    experimental_chooseNewThreadExecution(chooser) {
+      assertLive();
+      validateNewThreadExecutionChooserRegistration({
+        chooser,
+        heldByThisPlugin: newThreadExecutionChooser !== null,
+        heldByOtherPlugin: undefined,
+      });
+      newThreadExecutionChooser = chooser;
+    },
   };
 
   const experimental_hooks: PluginHooks = {
@@ -1786,6 +1813,9 @@ function createFakePluginHostInternal(
       get instructionProvider() {
         return instructionProvider;
       },
+      get newThreadExecutionChooser() {
+        return newThreadExecutionChooser;
+      },
       get threadEventHandlers() {
         return {
           "experimental_thread.events":
@@ -1887,6 +1917,24 @@ function createFakePluginHostInternal(
         emitLog(
           "warn",
           `provider environment health contribution failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        return null;
+      }
+    },
+    async chooseNewThreadExecution(request, options) {
+      assertLive();
+      if (newThreadExecutionChooser === null) return null;
+      try {
+        const choice = await newThreadExecutionChooser(request, {
+          signal: options?.signal ?? new AbortController().signal,
+        });
+        return choice === null
+          ? null
+          : validateNewThreadExecutionChoice(choice);
+      } catch (error) {
+        emitLog(
+          "warn",
+          `new-thread execution chooser failed: ${error instanceof Error ? error.message : String(error)}`,
         );
         return null;
       }
