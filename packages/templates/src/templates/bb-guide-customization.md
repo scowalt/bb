@@ -123,9 +123,9 @@ in `bb guide machines`; prefer `bb server access` for the route keys.
   picker): true hides the model and reasoning picker in the new-thread prompt
   box. A plugin that registered a new-thread execution chooser, or bb's
   defaults, then pick each new thread's model. An existing thread's prompt box
-  keeps the picker, so its model can still be switched. The chooser sees what `bb thread spawn
-  --model` and `--reasoning-level` named and decides whether to keep it. Set it
-  with `bb settings general hideModelPicker on`.
+  keeps the picker, so its model can still be switched. The chooser sees what
+  `bb thread spawn --model` and `--reasoning-level` named and decides whether
+  to keep it. Set it with `bb settings general hideModelPicker on`.
 - `confirmThreadArchive` (default true): set false to archive parent and child
   threads in the app without the confirmation popup; the toast still offers
   Undo. CLI and SDK archive calls are always non-interactive.
