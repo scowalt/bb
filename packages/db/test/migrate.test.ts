@@ -1944,6 +1944,8 @@ describe("migrate", () => {
         keepHistoryAfterContextClear: false,
         summarizeShellCommands: true,
         resumeThreadsAfterRestart: false,
+        regenerateTitleOnIdle: false,
+        hideModelPicker: false,
         providerOrder: [],
         defaultProviderId: null,
         providerCompletedTurnDisplay: {},
