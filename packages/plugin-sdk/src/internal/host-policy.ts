@@ -49,6 +49,7 @@ import type {
   PluginProviderCompletedTurnDisplay,
   PluginProviderDeclaration,
   ExperimentalPluginProviderEnvEntry,
+  NewThreadExecutionChoice,
   PluginProviderExtensionKindDeclaration,
   PluginProviderFallbackModel,
   PluginProviderModelCatalogScope,
@@ -3587,6 +3588,51 @@ export function validateProviderEnvContribution(
   }
   if (typeof resolve !== "function") {
     throw new Error(`${label} requires a resolver function`);
+  }
+}
+
+export const NEW_THREAD_EXECUTION_CHOOSER_TIMEOUT_MS = 3_000;
+
+const newThreadExecutionChoiceSchema = z.object({
+  providerId: z.string().min(1),
+  model: z.string().min(1),
+  reasoningLevel: z.string().min(1),
+  reason: z.string(),
+});
+
+export function validateNewThreadExecutionChoice(
+  value: unknown,
+): NewThreadExecutionChoice {
+  const parsed = newThreadExecutionChoiceSchema.safeParse(value);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    const path = issue?.path.length ? `${issue.path.join(".")} ` : "";
+    throw new Error(
+      `new-thread execution choice ${path}${issue?.message ?? "is invalid"}`,
+    );
+  }
+  return parsed.data;
+}
+
+export function validateNewThreadExecutionChooserRegistration(args: {
+  chooser: unknown;
+  heldByThisPlugin: boolean;
+  heldByOtherPlugin: string | undefined;
+}): void {
+  if (typeof args.chooser !== "function") {
+    throw new Error(
+      "chooseNewThreadExecution requires a chooser function (request, { signal }) => choice | null",
+    );
+  }
+  if (args.heldByOtherPlugin !== undefined) {
+    throw new Error(
+      `a new-thread execution chooser is already registered by plugin "${args.heldByOtherPlugin}"`,
+    );
+  }
+  if (args.heldByThisPlugin) {
+    throw new Error(
+      "a new-thread execution chooser is already registered by this plugin",
+    );
   }
 }
 

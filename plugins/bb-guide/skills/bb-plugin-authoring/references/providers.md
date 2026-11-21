@@ -162,6 +162,44 @@ provider bridge reports `unauthenticated` or `expired`, and only when the same
 plugin registered an env resolver for that provider. Installation and unknown
 failures are preserved.
 
+### `bb.providers.experimental_chooseNewThreadExecution` — choosing a new thread's model
+
+A plugin can pick the provider, model, and reasoning level of every new
+thread. Register the chooser once; bb allows one chooser per server, and a
+second registration throws and names the plugin that holds it:
+
+```ts
+bb.providers.experimental_chooseNewThreadExecution(async (request) => {
+  if (request.requested.model !== null) return null;
+  return {
+    providerId: "pi",
+    model: "claude-bridge/claude-opus-5-5",
+    reasoningLevel: "high",
+    reason: "Opus has the lower weekly pace",
+  };
+});
+```
+
+bb calls the chooser once per thread create, after it resolves the thread's
+environment and before it resolves provider and model defaults. Forks and
+handoffs skip it. The `NewThreadExecutionRequest` has `projectId`, `hostId`
+(the machine, or `null`), `origin`, `originPluginId`, `parentThreadId`,
+`requested` (what the request named, `null` per field where it named nothing),
+and `sources` (`"explicit"` for a user's choice, `"client-preference"` for a
+remembered client default). Return a `NewThreadExecutionChoice`
+(`providerId`, `model`, `reasoningLevel`, `reason`) to replace what the request
+named, or `null` to leave the create alone. A choice that moves the thread to a
+provider other than the one the request named, or the request named none,
+drops the request's session options and service tier and lowers its permission
+mode to one the new provider supports.
+
+The chooser has 3 seconds; its second argument's `signal` aborts at the limit. A throw, a timeout,
+`null`, a malformed choice, a provider that is unknown, disabled, or
+unavailable, or a reasoning level the provider does not support creates the
+thread as if no chooser were registered, and bb never fails a create because
+of it. bb logs each applied choice with its `reason`. Pair the chooser with
+the Hide the model picker general setting so people stop choosing by hand.
+
 ### Native skill and command roots
 
 Declare fixed host-home or workspace-relative roots with
