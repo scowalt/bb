@@ -14,6 +14,7 @@ import type { ReuseThreadOption } from "@/components/pickers/ReuseEnvironmentPic
 import {
   resolveNewThreadProjectDefaultsState,
   rememberedDefaultSources,
+  submittedExecutionSources,
   resolveNewThreadBlocker,
   resolveNewThreadSubmitDisabledReason,
   restorePromptDraftAfterOptionChange,
@@ -1444,5 +1445,64 @@ describe("rememberedDefaultSources", () => {
     expect(rememberedDefaultSources({ permissionMode: "explicit" })).toEqual({
       permissionMode: "explicit",
     });
+  });
+});
+
+describe("submittedExecutionSources", () => {
+  const existingMachine = {
+    type: "provider",
+    environmentProviderId: "git-worktree",
+    machine: { type: "existing", hostId: "host_a" },
+    inputs: null,
+  } as const;
+  const newMachine = {
+    type: "provider",
+    environmentProviderId: "cloud",
+    machine: { type: "new" },
+    inputs: null,
+  } as unknown as Parameters<typeof submittedExecutionSources>[0]["environment"];
+
+  it("keeps the picker's explicit choice when the picker is shown", () => {
+    expect(
+      submittedExecutionSources({
+        environment: existingMachine,
+        hideModelPicker: false,
+        composerSources: { providerId: "explicit", model: "explicit" },
+        seededSources: {},
+      }),
+    ).toEqual({ providerId: "explicit", model: "explicit" });
+  });
+
+  it("sends a hidden picker's leaked explicit choice as a remembered default", () => {
+    expect(
+      submittedExecutionSources({
+        environment: existingMachine,
+        hideModelPicker: true,
+        composerSources: { providerId: "explicit", model: "explicit" },
+        seededSources: {},
+      }),
+    ).toEqual({ providerId: "client-preference", model: "client-preference" });
+  });
+
+  it("still names the model for a machine that does not exist yet when the picker is hidden", () => {
+    expect(
+      submittedExecutionSources({
+        environment: newMachine,
+        hideModelPicker: true,
+        composerSources: {},
+        seededSources: {},
+      }),
+    ).toEqual({ model: "client-preference" });
+  });
+
+  it("passes a plugin seed's explicit sources through when the picker is hidden", () => {
+    expect(
+      submittedExecutionSources({
+        environment: existingMachine,
+        hideModelPicker: true,
+        composerSources: { providerId: "explicit" },
+        seededSources: { model: "explicit" },
+      }),
+    ).toEqual({ providerId: "client-preference", model: "explicit" });
   });
 });
