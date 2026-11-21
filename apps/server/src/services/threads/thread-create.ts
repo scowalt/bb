@@ -74,6 +74,7 @@ import {
 import { deriveForkTitle, deriveTitleFallback } from "./title-generation.js";
 import type { ThreadProvisionEnvironmentIntent } from "./thread-startup-store.js";
 import { resolveSystemProviderModels } from "../system/execution-options.js";
+import { resolveThreadCreateExecutionInput } from "./new-thread-execution-chooser.js";
 import {
   getEnvironmentProvider,
   listEnvironmentCompositions,
@@ -712,25 +713,6 @@ export async function createThreadFromRequest(
     }
   }
   await deps.providerRegistry.whenRegistrationsSettled();
-  const {
-    defaultModel: inheritedDefaultModel,
-    providerId,
-    providerFallbackCandidates,
-    requestedModel,
-  } = resolveProjectExecutionDefaultsForCreate(deps, {
-    executionInputSources: requestInput.executionInputSources,
-    model: requestInput.model,
-    parentThread,
-    projectId: requestInput.projectId,
-    providerId: requestInput.providerId,
-  });
-  const {
-    originKind: _requestedOriginKind,
-    parentThreadId: _requestedParentThreadId,
-    pluginMetadata: _requestedPluginMetadata,
-    sourceThreadId: _requestedSourceThreadId,
-    ...requestRest
-  } = requestInput;
   const requestedEnvironment = await resolveCreateThreadEnvironment(deps, {
     parentThread:
       forkSourceEnvironmentId !== undefined
@@ -750,6 +732,52 @@ export async function createThreadFromRequest(
   ) {
     throw new ApiError(400, "invalid_request", "unknown environment provider");
   }
+  const resolvedEnvironment =
+    requestedEnvironment.type === "provider"
+      ? null
+      : resolveStableThreadRequestEnvironment(deps, {
+          environment: requestedEnvironment,
+          projectId: requestInput.projectId,
+        });
+  const childHostId =
+    resolvedEnvironment !== null
+      ? childHostIdForResolvedEnvironment(resolvedEnvironment)
+      : requestedEnvironment.type === "provider"
+        ? requestedEnvironment.machine?.type === "existing"
+          ? requestedEnvironment.machine.hostId
+          : null
+        : null;
+  assertForkSourceHost(deps, {
+    childHostId,
+    originKind,
+    sourceThread,
+  });
+  if (childHostId !== null) {
+    await ensureHostSessionReadyForWork(deps, { hostId: childHostId });
+  }
+  const executionInput = await resolveThreadCreateExecutionInput(deps, {
+    hostId: childHostId,
+    input: requestInput,
+  });
+  const {
+    defaultModel: inheritedDefaultModel,
+    providerId,
+    providerFallbackCandidates,
+    requestedModel,
+  } = resolveProjectExecutionDefaultsForCreate(deps, {
+    executionInputSources: executionInput.executionInputSources,
+    model: executionInput.model,
+    parentThread,
+    projectId: executionInput.projectId,
+    providerId: executionInput.providerId,
+  });
+  const {
+    originKind: _requestedOriginKind,
+    parentThreadId: _requestedParentThreadId,
+    pluginMetadata: _requestedPluginMetadata,
+    sourceThreadId: _requestedSourceThreadId,
+    ...requestRest
+  } = executionInput;
   const request: ThreadCreateServiceRequest = {
     ...requestRest,
     ...(hierarchyParentThreadId
@@ -778,29 +806,6 @@ export async function createThreadFromRequest(
     if (forkTitle !== null) {
       request.title = forkTitle;
     }
-  }
-  const resolvedEnvironment =
-    requestedEnvironment.type === "provider"
-      ? null
-      : resolveStableThreadRequestEnvironment(deps, {
-          environment: requestedEnvironment,
-          projectId: request.projectId,
-        });
-  const childHostId =
-    resolvedEnvironment !== null
-      ? childHostIdForResolvedEnvironment(resolvedEnvironment)
-      : request.environment.type === "provider"
-        ? request.environment.machine?.type === "existing"
-          ? request.environment.machine.hostId
-          : null
-        : null;
-  assertForkSourceHost(deps, {
-    childHostId,
-    originKind: request.originKind ?? null,
-    sourceThread,
-  });
-  if (childHostId !== null) {
-    await ensureHostSessionReadyForWork(deps, { hostId: childHostId });
   }
   const modelCatalogCwd =
     resolvedEnvironment !== null
