@@ -122,8 +122,9 @@ General. Machine-related keys (`machineServerUrl`, `defaultMachineAccess`,
   picker): true hides the model and reasoning picker in the new-thread and
   follow-up prompt boxes. A plugin that registered a new-thread execution
   chooser, or bb's defaults, then pick each new thread's model, and a thread
-  keeps its model for later messages. `bb thread spawn --model` and
-  `--reasoning` still apply. Set it with `bb settings general hideModelPicker on`.
+  keeps its model for later messages. The chooser sees what `bb thread spawn
+  --model` and `--reasoning-level` named and decides whether to keep it. Set it
+  with `bb settings general hideModelPicker on`.
 - `confirmThreadArchive` (default true): set false to archive parent and child
   threads in the app without the confirmation popup; the toast still offers
   Undo. CLI and SDK archive calls are always non-interactive.
