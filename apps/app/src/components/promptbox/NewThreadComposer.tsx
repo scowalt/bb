@@ -272,7 +272,11 @@ export function resolveSubmittedExecutionSources(
     : sources;
 }
 
-export interface NewThreadComposerSubmission extends NewThreadRequest {
+export interface NewThreadComposerSubmission extends Omit<
+  NewThreadRequest,
+  "model"
+> {
+  model?: string;
   pluginSubmission?: CreateThreadRequest["pluginSubmission"];
   sendAt?: number;
 }
@@ -343,6 +347,7 @@ type ProjectDefaultsState =
   | { status: "resolved"; defaults: ProjectExecutionDefaults | null };
 
 export interface ResolveNewThreadSubmitDisabledReasonArgs {
+  hideModelPicker: boolean;
   environmentProviderInputsBlocker: string | null;
   environmentSetupRequiredReason: string | null;
   isCopyingAttachments: boolean;
@@ -376,6 +381,7 @@ export function resolveNewThreadSubmitDisabledReason(
 }
 
 export function resolveNewThreadBlocker({
+  hideModelPicker,
   environmentProviderInputsBlocker,
   environmentSetupRequiredReason,
   isCopyingAttachments,
@@ -408,7 +414,7 @@ export function resolveNewThreadBlocker({
   if (!selectedProviderId) {
     return { message: "Select a provider.", reason: "provider_selection" };
   }
-  if (isLoadingModels) {
+  if (isLoadingModels && !hideModelPicker) {
     return pending("Loading models from the selected machine...");
   }
 
@@ -416,7 +422,11 @@ export function resolveNewThreadBlocker({
     modelLoadError?.code === "provider_unavailable" ||
     modelLoadError?.code === "missing_executable" ||
     modelLoadError?.code === "auth_required";
-  if (modelLoadError && (fatalModelLoadError || !selectedThreadModel)) {
+  if (
+    modelLoadError &&
+    !hideModelPicker &&
+    (fatalModelLoadError || !selectedThreadModel)
+  ) {
     return {
       message: formatModelLoadErrorText({
         error: modelLoadError,
@@ -430,7 +440,7 @@ export function resolveNewThreadBlocker({
             : "model_unavailable",
     };
   }
-  if (!selectedThreadModel) {
+  if (!selectedThreadModel && !hideModelPicker) {
     return { message: "Select a model.", reason: "model_selection" };
   }
   const setupMessage =
@@ -842,6 +852,8 @@ export function NewThreadComposer({
     [hostsQuery.data],
   );
   const systemConfigQuery = useSystemConfig();
+  const hideModelPicker =
+    systemConfigQuery.data?.generalSettings.hideModelPicker ?? false;
   const primaryHostId =
     selectPrimaryHost(
       availableHosts,
@@ -1863,6 +1875,7 @@ export function NewThreadComposer({
       (selectionScope === "new-thread" ? seed?.environment : undefined) ??
       null);
   const submissionBlocker = resolveNewThreadBlocker({
+    hideModelPicker,
     environmentProviderInputsBlocker:
       machineProviderInputs.blockedReason ?? environmentProviderInputsBlocker,
     environmentSetupRequiredReason:
@@ -1900,7 +1913,7 @@ export function NewThreadComposer({
         projectDefaultsUnavailable ||
         submissionEnvironment === null ||
         !selectedProviderId ||
-        !selectedThreadModel
+        (!selectedThreadModel && !hideModelPicker)
       ) {
         throw new Error(
           blockedReason ??
@@ -1917,7 +1930,7 @@ export function NewThreadComposer({
       const request: NewThreadComposerSubmission = {
         projectId,
         providerId: selectedProviderId,
-        model: selectedThreadModel,
+        ...(selectedThreadModel ? { model: selectedThreadModel } : {}),
         reasoningLevel,
         permissionMode,
         ...(supportsServiceTier && serviceTier ? { serviceTier } : {}),
@@ -1947,6 +1960,7 @@ export function NewThreadComposer({
     [
       clearReuseEnvironment,
       executionInputSources,
+      hideModelPicker,
       onSubmit,
       permissionMode,
       projectDefaultsUnavailable,

@@ -1,12 +1,10 @@
 import { useContext, useState } from "react";
-import type {
-  NewThreadComposerProps as PluginComposerProps,
-  NewThreadRequest,
-} from "@get-bb/plugin-sdk";
+import type { NewThreadComposerProps as PluginComposerProps } from "@get-bb/plugin-sdk";
 import { cn } from "@bb/shared-ui/lib/utils";
 import {
   NewThreadComposer,
   type NewThreadComposerSeed,
+  type NewThreadComposerSubmission,
 } from "@/components/promptbox/NewThreadComposer";
 import { PluginContext } from "@/components/plugin/plugin-context";
 import { useQuickCreateProjectController } from "@/hooks/useQuickCreateProject";
@@ -51,9 +49,16 @@ export function PluginNewThreadComposer({
     initialPrompt,
   };
   const composerKey = draftKey ?? pluginId ?? "default";
-  const handleSubmit = async (request: NewThreadRequest) => {
+  const handleSubmit = async ({
+    model,
+    ...request
+  }: NewThreadComposerSubmission) => {
+    if (model === undefined) {
+      throw new Error("Select a model before sending.");
+    }
     await onSubmit({
       ...request,
+      model,
       executionInputSources: {
         ...request.executionInputSources,
         providerId: "explicit",
