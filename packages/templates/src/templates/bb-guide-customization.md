@@ -118,6 +118,12 @@ General. Machine-related keys (`machineServerUrl`, `defaultMachineAccess`,
   (rename, `bb thread update --title`, `bb thread spawn --title`) stays until
   you run `bb thread regenerate-title` on that thread. Set it with
   `bb settings general regenerateTitleOnIdle on`.
+- `hideModelPicker` (default false; Settings → General → Hide the model
+  picker): true hides the model and reasoning picker in the new-thread and
+  follow-up prompt boxes. A plugin that registered a new-thread execution
+  chooser, or bb's defaults, then pick each new thread's model, and a thread
+  keeps its model for later messages. `bb thread spawn --model` and
+  `--reasoning` still apply. Set it with `bb settings general hideModelPicker on`.
 - `confirmThreadArchive` (default true): set false to archive parent and child
   threads in the app without the confirmation popup; the toast still offers
   Undo. CLI and SDK archive calls are always non-interactive.
