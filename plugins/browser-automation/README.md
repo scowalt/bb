@@ -151,7 +151,11 @@ profile closes, the host saves up to 20 open http(s) tab URLs to
 `bb-tabs.json` in the profile, closes Chrome with `Browser.close` so cookies
 reach disk, and stops it after five seconds if it has not exited. The next
 launch reopens the saved tabs. A launch waits for the previous shutdown of the
-same profile to finish. `--profile` is local only; desktop sessions already use
+same profile to finish. Profile browsers render at device scale factor 2, so
+the side panel stays sharp on high-density screens; temporary-profile browsers
+render at 1. Full-size previews are JPEG frames up to 2560 pixels on a side,
+and the host lowers their quality step by step when a frame would exceed the
+preview frame limit. `--profile` is local only; desktop sessions already use
 the BB browser's profile. The app's remote browser side panel opens sessions
 with the `default` profile, and the agent instructions tell agents to do the
 same, so the agent and the user share one browser. Each session owns a

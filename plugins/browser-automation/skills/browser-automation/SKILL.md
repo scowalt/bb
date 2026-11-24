@@ -54,7 +54,9 @@ Use refs from that session's DevBrowser snapshot. Do not mix agent-browser refs
 or invent selectors. Prefer a cheap URL/text/snapshot check after each action;
 request a screenshot when visual verification matters. Use
 `await p.shot({type:"jpeg",maxEdge:960,quality:70}); undefined` inside scripts to
-return a bounded JPEG file.
+return a bounded JPEG file. Profile browsers render at device pixel ratio 2, so a
+shot's `scale` is below 1 there; divide image coordinates by `scale` before
+passing them to `page.mouse`.
 
 `run` and `screenshot` return JSON with `hostId` and `images`, where each image
 has `path`, `mimeType`, `width`, and `height`. The path is in the browser session's
