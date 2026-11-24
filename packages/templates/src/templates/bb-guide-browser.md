@@ -1,6 +1,6 @@
 # Built-in browser automation
 
-`bb browser` is the experimental core API for automation integrations controlling BB desktop tabs. The bundled Browser Automation plugin adds its own `bb browser-automation` session commands (see its browser-automation skill); another plugin can use the same core connection independently.
+`bb browser` is the experimental core API for automation integrations controlling BB desktop tabs. The bundled Browser Automation plugin adds its own `bb browser-automation` session commands (see its browser-automation skill); another plugin can use the same core connection independently. Agents browse with `bb browser-automation` and should not use `bb browser` to drive the user's desktop tabs.
 
 Start with `bb browser instances --host <host-id> --json`. For every tab/control operation provide `--host <host-id> --instance <instance-id> --generation <generation> --thread <thread-id>`. The browser host can differ from the agent host. Never infer an active desktop window.
 
