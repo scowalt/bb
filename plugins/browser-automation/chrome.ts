@@ -25,6 +25,7 @@ export interface BrowserLauncher {
     dataDir: string;
     userDataDir: string;
     urls: string[];
+    scale: number;
     signal: AbortSignal;
   }): Promise<ChromeProcess>;
   call(connectionUrl: string, method: string): Promise<unknown>;
@@ -41,6 +42,7 @@ export type BrowserRegistry = ReturnType<typeof createBrowserRegistry>;
 const tabsFile = "bb-tabs.json";
 const maxSavedTabs = 20;
 const launchTimeoutMs = 30_000;
+const profileScale = 2;
 const targetsSchema = z.object({
   targetInfos: z.array(z.object({ type: z.string(), url: z.string() })),
 });
@@ -129,6 +131,7 @@ export function createBrowserRegistry(
           dataDir,
           userDataDir,
           urls: persistent ? await savedTabs(userDataDir) : [],
+          scale: persistent ? profileScale : 1,
           signal: AbortSignal.timeout(launchTimeoutMs),
         });
       }),
@@ -261,7 +264,7 @@ const responseSchema = z.object({
 });
 
 export const chromeLauncher: BrowserLauncher = {
-  async launch({ dataDir, userDataDir, urls, signal }) {
+  async launch({ dataDir, userDataDir, urls, scale, signal }) {
     const chrome = await findChrome(dataDir);
     const agent = await userAgent(chrome);
     const portFile = join(userDataDir, "DevToolsActivePort");
@@ -279,6 +282,7 @@ export const chromeLauncher: BrowserLauncher = {
         "--password-store=basic",
         "--use-mock-keychain",
         "--window-size=1280,720",
+        `--force-device-scale-factor=${scale}`,
         ...(agent === null ? [] : [`--user-agent=${agent}`]),
         ...(urls.length > 0 ? urls : ["about:blank"]),
       ],
