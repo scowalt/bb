@@ -3,14 +3,21 @@ name: browser-automation
 description: Use the Browser Automation BB plugin to inspect and automate persistent browser pages in an explicit desktop or local headless session. Use for browser navigation, snapshots, clicking, forms, and verification screenshots.
 ---
 
-Use `bb browser-automation`. Open one session, retain its session ID, then inspect,
-act, and verify in short scripts.
+Use `bb browser-automation`. Run `bb browser-automation list --json` first and
+reuse a `ready` session the thread already has; the user may have opened one
+from the side panel. Otherwise open one session, retain its session ID, then
+inspect, act, and verify in short scripts.
 
 `--machine` accepts an exact host ID or an unambiguous machine name. Exact IDs
 take precedence over names; unknown or ambiguous names fail before opening a session.
 
-Choose `--backend local --headless --machine <host-id>` for headless Chrome on
-an enrolled host. Choose `--backend desktop --machine <host-id> --desktop
+Choose `--backend local --headless --machine <host-id> --profile default` for
+headless Chrome on an enrolled host. A profile keeps cookies, logins, and open
+tabs on that host across sessions, and every session naming it shares one
+browser, the same one the user sees in the side panel's remote browser tab.
+Profile names use 1-40 lowercase letters, digits, and dashes. Omit `--profile`
+only when the task needs a fresh, empty browser that is discarded on close.
+Choose `--backend desktop --machine <host-id> --desktop
 <instance-id>` for a new desktop automation tab. Desktop tabs use the BB
 browser's profile, including the user's signed-in cookies. Starting desktop
 control opens the side panel and selects the browser tab only if its thread is
@@ -30,7 +37,7 @@ that thread.
 CLI opening:
 
 ```sh
-bb browser-automation open --backend local --headless --machine <host-id> --json
+bb browser-automation open --backend local --headless --machine <host-id> --profile default --json
 bb browser-automation open --backend desktop --machine <host-id> --desktop <instance-id> --json
 ```
 
@@ -79,8 +86,11 @@ renders it as a live view of that browser in the chat, which the user can
 expand, so they can watch while you work. Desktop
 sessions return no directive; that browser is already visible in the side
 panel. `bb browser-automation preview <session-id> --json` reports the live
-frame's `url`, `title`, size, and `sequence` without image bytes; it is not a
-substitute for `screenshot` when you need to see the page.
+frame's `url`, `title`, size, `sequence`, open `tabs`, and `activeTabId` without
+image bytes; it is not a substitute for `screenshot` when you need to see the
+page. The user can click, type, scroll, navigate, and switch tabs in the
+full-size viewer while you work. Re-snapshot before acting if the page may
+have changed under you.
 
 `pages` lists persistent pages. Runs serialize within a session. Scripts are
 trusted JavaScript with Puppeteer-style DevBrowser APIs, not a sandbox.
@@ -92,12 +102,15 @@ and timeout stop the session too; open a new session to resume. A run whose
 output passes 512 KB fails with exit code 1 but keeps the session open; return
 or print less and run again. Close disposes
 owned Chrome and desktop tabs the session opened while preserving a `--tab` tab.
+Closing a profile session closes only the named pages it opened; the browser
+keeps running for other sessions on that profile, and the last one to close
+saves its tabs and cookies.
 Close sessions after use. When `close` or `stop` fails, the session still
 accepts no more commands, but its browser may still be running; run `close`
 again to retry cleanup. `run`, `pages`, and `screenshot` renew expiry at their start and completion to
 30 minutes later, capped at eight hours from creation. Active scripts are not idle;
-the hard deadline still stops running work. `list` and live preview do not renew
-expiry. Desktop leases and connections cannot be renewed through the current API,
+the hard deadline still stops running work. `list` and thumbnail previews do not
+renew expiry; the full-size viewer and the user's input in it do. Desktop leases and connections cannot be renewed through the current API,
 so desktop sessions still end at their earlier deadline (at most 30 minutes from
 creation). Timeouts default to 30 seconds, maximum 120 seconds: pass either
 `--timeout-ms <1000-120000>` or `--timeout <duration>`, where a duration carries

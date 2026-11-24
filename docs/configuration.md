@@ -1637,7 +1637,9 @@ to the next new machine. See the `modal-sandboxes` skill.
 
 The Browser Automation plugin installs its pinned `dev-browser` release on
 first use on each browser host, under the plugin's host storage directory; it
-never modifies the user's global npm installation. See the
+never modifies the user's global npm installation. Headless sessions opened
+with `--profile <name>` keep that Chrome profile, with its cookies and saved
+tabs, under the same storage directory at `profiles/<name>`. See the
 `browser-automation` skill and `plugins/browser-automation/README.md`. For
 isolated development smoke tests only, `DEV_BROWSER_SMOKE_BINARY` and
 `DEV_BROWSER_SMOKE_CHROME` select absolute binary and Chrome paths.
