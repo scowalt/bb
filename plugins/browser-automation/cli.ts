@@ -7,7 +7,7 @@ import {
   type PluginCliResult,
 } from "@get-bb/plugin-sdk";
 import type { z } from "zod";
-import type { rpcContract } from "./contracts.js";
+import { profileSchema, type rpcContract } from "./contracts.js";
 
 export type BrowserCliMethod =
   | "open"
@@ -86,7 +86,7 @@ export function createBrowserAutomationCli(deps: {
     name: "browser-automation",
     summary: "Persistent DevBrowser desktop and headless sessions",
     description:
-      "Sessions belong to the thread that opened them. run, pages, and screenshot renew expiry to 30 minutes after use, capped at 8 hours from creation.\nDesktop sessions also expire at their non-renewable control lease/connection deadline (at most 30 minutes).\nlist and live preview do not renew expiry. A stopped or expired session cannot be resumed; open a new one.",
+      "Sessions belong to the thread that opened them. run, pages, and screenshot renew expiry to 30 minutes after use, capped at 8 hours from creation.\nDesktop sessions also expire at their non-renewable control lease/connection deadline (at most 30 minutes).\nlist and thumbnail previews do not renew expiry; the full-size viewer and its input do. A stopped or expired session cannot be resumed; open a new one.",
     commands: {
       open: cliCommand({
         summary:
@@ -121,6 +121,12 @@ export function createBrowserAutomationCli(deps: {
             type: "boolean",
             description: "Required by the local backend, rejected by desktop",
           },
+          profile: {
+            type: "string",
+            placeholder: "name",
+            description:
+              "Persistent host browser profile shared with the side panel, such as default (local backend only); omit for a temporary profile",
+          },
           thread: THREAD_OPTION,
           json: JSON_OPTION,
         },
@@ -138,18 +144,39 @@ export function createBrowserAutomationCli(deps: {
                 { code: "invalid_selection" },
               );
             }
+            const profile = input.options.profile;
+            if (
+              profile !== undefined &&
+              !profileSchema.safeParse(profile).success
+            ) {
+              throw new PluginCliError(
+                "Profile names use 1-40 lowercase letters, digits, and dashes, starting with a letter or digit",
+                { code: "invalid_selection" },
+              );
+            }
             return deps.execute(
               {
                 method: "open",
-                input: { threadId, selection: { backend: "local", hostId } },
+                input: {
+                  threadId,
+                  selection: {
+                    backend: "local",
+                    hostId,
+                    ...(profile === undefined ? {} : { profile }),
+                  },
+                },
               },
               ctx,
             );
           }
           const instanceId = input.options.desktop;
-          if (instanceId === undefined || input.options.headless) {
+          if (
+            instanceId === undefined ||
+            input.options.headless ||
+            input.options.profile !== undefined
+          ) {
             throw new PluginCliError(
-              "Desktop sessions require --desktop <instance-id> and cannot use --headless",
+              "Desktop sessions require --desktop <instance-id> and cannot use --headless or --profile",
               { code: "invalid_selection" },
             );
           }
@@ -173,7 +200,7 @@ export function createBrowserAutomationCli(deps: {
         },
       }),
       list: cliCommand({
-        summary: "List this thread's browser sessions",
+        summary: "List this thread's browser sessions, with each one's profile",
         options: { thread: THREAD_OPTION, json: JSON_OPTION },
         run: (input, ctx) =>
           deps.execute(

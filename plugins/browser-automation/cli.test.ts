@@ -235,7 +235,9 @@ describe("CLI boundaries", () => {
     expect(top.stdout).toContain(
       "non-renewable control lease/connection deadline",
     );
-    expect(top.stdout).toContain("list and live preview do not renew expiry");
+    expect(top.stdout).toContain(
+      "list and thumbnail previews do not renew expiry; the full-size viewer and its input do",
+    );
 
     const runHelp = await invoke(["run", "--help"]);
     expect(runHelp.exitCode).toBe(0);
