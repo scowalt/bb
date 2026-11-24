@@ -12,7 +12,12 @@ function createFakeBrowser(initial: FakePage[]) {
   const pages = new Map(initial.map((page) => [page.targetId, page]));
   const sessions = new Map<string, string>();
   const acks: number[] = [];
-  const casts: { targetId: string; session: string; maxWidth: number }[] = [];
+  const casts: {
+    targetId: string;
+    session: string;
+    maxWidth: number;
+    quality: number;
+  }[] = [];
   const connections: FakeSocket[] = [];
   const toolbarHeights = new Map<string, unknown>();
   const commands: {
@@ -51,6 +56,7 @@ function createFakeBrowser(initial: FakePage[]) {
           targetId?: string;
           sessionId?: string | number;
           maxWidth?: number;
+          quality?: number;
           url?: string;
         };
         sessionId?: string;
@@ -121,6 +127,7 @@ function createFakeBrowser(initial: FakePage[]) {
             targetId: sessions.get(message.sessionId!)!,
             session: message.sessionId!,
             maxWidth: message.params.maxWidth!,
+            quality: message.params.quality!,
           });
           browser.frame(sessions.get(message.sessionId!)!);
         }
@@ -326,10 +333,34 @@ describe("live preview", () => {
     const back = await preview.next(full!.sequence, 1_000, never, "thumbnail");
     expect(back!.sequence).toBeGreaterThan(full!.sequence);
     expect(browser.casts.map((cast) => cast.maxWidth)).toEqual([
-      800, 1280, 800,
+      800, 2560, 800,
     ]);
     expect(new Set(browser.casts.map((cast) => cast.session)).size).toBe(1);
     expect(browser.connections).toHaveLength(1);
+    preview.close();
+  });
+
+  it("lowers JPEG quality instead of dropping the stream when frames exceed the size limit", async () => {
+    const browser = createFakeBrowser([shop]);
+    const preview = createPreview(
+      "ws://127.0.0.1:1/x",
+      { ...timing, idleMs: 5_000 },
+      browser.open,
+    );
+    const first = await preview.next(0, 1_000, never, "full");
+    const oversized = "x".repeat(700_001);
+    browser.frame("shop", oversized);
+    await vi.waitFor(() =>
+      expect(browser.casts.map((cast) => cast.quality)).toEqual([60, 45]),
+    );
+    browser.frame("shop", oversized);
+    browser.frame("shop", oversized);
+    await vi.waitFor(() =>
+      expect(browser.casts.map((cast) => cast.quality)).toEqual([60, 45, 30]),
+    );
+    const next = await preview.next(first!.sequence, 1_000, never, "full");
+    expect(next!.data).not.toBe(oversized);
+    expect(new Set(browser.casts.map((cast) => cast.session)).size).toBe(1);
     preview.close();
   });
 

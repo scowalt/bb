@@ -49,7 +49,10 @@ const screencastFrameSchema = z.object({
 
 const maxFrameChars = 700_000;
 const maxTabs = 20;
-const frameEdge: Record<PreviewSize, number> = { thumbnail: 800, full: 1280 };
+const frameEdge: Record<PreviewSize, number> = { thumbnail: 800, full: 2560 };
+const startQuality = 60;
+const qualityStep = 15;
+const minQuality = 30;
 const mouseEvents = {
   move: "mouseMoved",
   down: "mousePressed",
@@ -107,8 +110,12 @@ export function createPreview(
   >();
   const waiters = new Set<{ check(): void; fail(error: Error): void }>();
   let socket: PreviewSocket | null = null;
-  let cast: { targetId: string; sessionId: string; size: PreviewSize } | null =
-    null;
+  let cast: {
+    targetId: string;
+    sessionId: string;
+    size: PreviewSize;
+    quality: number;
+  } | null = null;
   let focused: string | null = null;
   let viewport: { width: number; height: number } | null = null;
   let pressedButtons = 0;
@@ -234,19 +241,41 @@ export function createPreview(
           ).sessionId;
           await fitWindow(connection, targetId, sessionId).catch(() => {});
         }
-        cast = { targetId, sessionId, size };
-        await send(
-          connection,
-          "Page.startScreencast",
-          {
-            format: "jpeg",
-            quality: 60,
-            maxWidth: frameEdge[size],
-            maxHeight: frameEdge[size],
-            everyNthFrame: 1,
-          },
-          sessionId,
-        );
+        cast = { targetId, sessionId, size, quality: startQuality };
+        await startScreencast(connection, cast);
+      })
+      .catch(() => {
+        if (connection === socket) disconnect();
+      });
+  }
+
+  function startScreencast(
+    connection: PreviewSocket,
+    target: { sessionId: string; size: PreviewSize; quality: number },
+  ) {
+    return send(
+      connection,
+      "Page.startScreencast",
+      {
+        format: "jpeg",
+        quality: target.quality,
+        maxWidth: frameEdge[target.size],
+        maxHeight: frameEdge[target.size],
+        everyNthFrame: 1,
+      },
+      target.sessionId,
+    );
+  }
+
+  function lowerQuality(connection: PreviewSocket) {
+    const current = cast;
+    if (current === null || current.quality <= minQuality) return;
+    current.quality = Math.max(minQuality, current.quality - qualityStep);
+    selection = selection
+      .then(async () => {
+        if (connection !== socket || cast !== current) return;
+        await send(connection, "Page.stopScreencast", {}, current.sessionId);
+        await startScreencast(connection, current);
       })
       .catch(() => {
         if (connection === socket) disconnect();
@@ -330,7 +359,8 @@ export function createPreview(
       const sessionId = message.sessionId;
       if (sessionId === undefined || sessionId !== cast?.sessionId) return;
       const frame = screencastFrameSchema.parse(message.params);
-      if (frame.data.length <= maxFrameChars)
+      if (frame.data.length > maxFrameChars) lowerQuality(connection);
+      else
         publish({
           mimeType: "image/jpeg",
           data: frame.data,
