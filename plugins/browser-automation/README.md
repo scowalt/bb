@@ -96,7 +96,11 @@ Headless sessions need Chrome/Chromium on that host. The plugin checks
 PATH. The `runtime/chrome` entry can be a symlink to an installed executable.
 Plugin-owned local/headless Chrome always launches with `--no-sandbox`, disabling
 Chrome's sandbox so it can run on hosts that restrict unprivileged user namespaces.
-Desktop sessions attach to an existing browser and do not change its launch flags.
+It also launches with `--password-store=basic` and `--use-mock-keychain`; without
+them, Chrome waits about 25 seconds for a desktop keyring on the first request
+of a headless session. It reports the host Chrome's version in a regular,
+non-headless user agent. Desktop sessions attach to an existing browser and do
+not change its launch flags.
 
 ## CLI and agent workflow
 
@@ -105,7 +109,7 @@ profile migration. Find desktop instances through BB's core desktop-browser
 CLI/SDK discovery. The selected instance's generation is resolved on opening.
 
 ```sh
-bb browser-automation open --backend local --headless --machine <host-id> --json
+bb browser-automation open --backend local --headless --machine <host-id> [--profile <name>] --json
 bb browser-automation open --backend desktop --machine <desktop-host-id> --desktop <instance-id> --json
 bb browser-automation list --json
 bb browser-automation run <session-id> --script 'const p = await browser.getPage("main"); await p.goto("https://example.com"); await p.snapshot()' --json
@@ -137,7 +141,20 @@ The plugin records every tab opened under the session's control lease, and
 control and preserves desktop tabs, including plugin-created ones, until close
 or cleanup.
 
-Local sessions own a Chrome process and a separate, empty profile. Each session owns a
+Without `--profile`, a local session owns a Chrome process and a separate,
+empty profile in a temporary directory that `close` deletes. With
+`--profile <name>` (1-40 lowercase letters, digits, and dashes, starting with a
+letter or digit) it uses `<plugin host dataDir>/profiles/<name>` on that host,
+and every open session naming the profile shares one Chrome. Closing such a
+session closes only the named pages it opened. When the last session on a
+profile closes, the host saves up to 20 open http(s) tab URLs to
+`bb-tabs.json` in the profile, closes Chrome with `Browser.close` so cookies
+reach disk, and stops it after five seconds if it has not exited. The next
+launch reopens the saved tabs. A launch waits for the previous shutdown of the
+same profile to finish. `--profile` is local only; desktop sessions already use
+the BB browser's profile. The app's remote browser side panel opens sessions
+with the `default` profile, and the agent instructions tell agents to do the
+same, so the agent and the user share one browser. Each session owns a
 fresh `DEV_BROWSER_HOME` and socket under the worker's temporary directory.
 Pages and cookies persist between runs in that session. `stop`, timeout, or
 cancellation terminates that local session; open another session to resume.
@@ -147,7 +164,8 @@ Each operation renews expiry at its start and completion, up to eight hours from
 creation; active scripts do not count as idle. The hard deadline also stops running
 work. Desktop control leases and connections cannot be renewed through the current
 API, so desktop sessions retain their earlier deadline (at most 30 minutes from
-creation). `list` and live preview do not renew expiry. Archiving, deleting, or failing a thread
+creation). `list` and thumbnail previews do not renew expiry; full-size
+previews and viewer input do. Archiving, deleting, or failing a thread
 closes its sessions; normal idle turns preserve them. Externally invoked CLI
 runs remain subject to the same per-run timeout and absolute session expiry. Run timeouts default to 30 seconds and are
 bounded to 1–120 seconds. Runs are serialized per session.
@@ -170,10 +188,14 @@ session records or CLI session results.
 
 The CLI uses the same validated operation handlers as RPC. The
 RPC contract in `contracts.ts` exposes `open`, `list`, `run`, `pages`,
-`screenshot`, `preview`, `stop`, and `close`.
+`screenshot`, `preview`, `input`, `openForThread`, `stop`, and `close`.
 RPC inputs include `threadId`; session operations also include `sessionId`.
-`open.selection` is `{backend:"local",hostId}` or
+`open.selection` is `{backend:"local",hostId,profile?}` or
 `{backend:"desktop",hostId,instanceId,tabId?}`. A tab ID takes over that existing tab.
+`openForThread` serves the side panel: it returns the thread's newest ready
+local session, or opens one with the `default` profile on the host of the
+thread's environment. Concurrent calls for one thread share a single open. A
+thread without an environment fails with a pointer to the CLI.
 Agents discover the commands through the skill and CLI help.
 
 The host supervises Chrome and the DevBrowser daemon as separate children. Each
@@ -209,35 +231,50 @@ card away. Desktop sessions return no directive and never preview: that
 browser is already visible in the app's side panel, and its brokered connection
 is not reused for previews.
 
-Frames come from a second, read-only CDP connection that the host worker opens
-to the session's own Chrome (`preview.ts`). It runs `Page.startScreencast` as
+Frames come from a second CDP connection that the host worker opens to the
+session's own Chrome (`preview.ts`). It runs `Page.startScreencast` as
 JPEG at about four frames per second, at most 800 pixels on the long edge for
-thumbnails. While a lightbox requests `size: "full"` it recasts the same page at
-up to 1280 pixels, the headless window's width, and returns to thumbnails ten
-seconds after the last full-size request. It casts only while something is
-watching: the connection closes after 15 seconds
+thumbnails. While a lightbox or side panel requests `size: "full"` it recasts
+the same page at about ten frames per second, up to 1280 pixels on the long edge, and
+returns to thumbnails ten seconds after the last full-size request. It casts
+only while something is watching: the connection closes after 15 seconds
 without a request and reopens on demand. It previews the page that navigated
 most recently, preferring any page over `about:blank`, so it follows the named
-page a script is driving. Previews never enter the per-session run queue, so
-they keep updating while a script runs and never delay one.
+page a script is driving, until the viewer picks a tab; then it stays on that
+tab until the tab closes. Every frame carries the browser's open `tabs` (up to
+20, each `{id,url,title}`) and the `activeTabId` it shows. Previews never enter
+the per-session run queue, so they keep updating while a script runs and never
+delay one.
+
+### Viewer input
+
+The `input` RPC takes a batch of 1-64 viewer actions for a ready local session
+the thread owns and applies them to the previewed tab over the same CDP
+connection: mouse and wheel events (`Input.dispatchMouseEvent`), keys
+(`Input.dispatchKeyEvent`), text (`Input.insertText`), navigation, back and
+forward through the tab's history, reload, resizing the window
+(`Browser.setWindowBounds`, 320-2560 by 240-2560), and selecting, opening, or
+closing tabs. A new tab becomes the previewed tab. Input waits up to ten
+seconds for the cast to attach and fails for desktop sessions, sessions that
+are not ready, and sessions of other threads. Input does not enter the run
+queue, so the user and a running script can act on the same page at once.
 
 The app long-polls the `preview` RPC with the last sequence it rendered and the
 `size` it needs, `thumbnail` by default; the
 server forwards to the host's `preview` RPC, which answers as soon as a newer
-frame exists or after five seconds with `frame: null`. An inline card polls
+frame exists or after five seconds with `frame: null`. Full-size requests and
+input renew the session's expiry; thumbnail requests do not. An inline card polls
 only while the window is visible and it is expanded and scrolled into view, so
 cards left behind in the chat history cost nothing. The lightbox opens from the
 card's current frame and then runs its own poller; the card pauses its poller
-while its session's lightbox is open. Preview requests are not
-session activity: watching a preview does not postpone the 30-minute idle
-cleanup. When the session stops, closes, or expires, the card keeps its last
+while its session's lightbox is open. When the session stops, closes, or expires, the card keeps its last
 frame dimmed for as long as it stays mounted; a card first viewed after that
 shows only its Ended header. A card whose session it can never read, such as a
 directive copied into a forked thread, gives up after five failed requests.
 
 `bb browser-automation preview <session-id> --json` reports the same live frame
 as `{session, frame}` where `frame` has `sequence`, `mimeType`, `width`,
-`height`, `url`, `title`, and `bytes`, or is `null` when nothing newer than
+`height`, `url`, `title`, `tabs`, `activeTabId`, and `bytes`, or is `null` when nothing newer than
 `--after` arrived. It omits the image bytes; use `screenshot` for a file.
 
 ## Validation
