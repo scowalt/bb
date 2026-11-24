@@ -269,6 +269,27 @@ describe("server session ownership", () => {
     },
   );
 
+  it("lists ready sessions before ended ones", async () => {
+    const h = await setup();
+    try {
+      const older = await h.open();
+      const newer = await h.open();
+      await h.harness.behavior.callRpc("close", {
+        threadId: "thread-test",
+        sessionId: older.id,
+      });
+      const sessions = rpcContract.list.output.parse(
+        await h.harness.behavior.callRpc("list", { threadId: "thread-test" }),
+      );
+      expect(sessions.map((entry) => [entry.id, entry.state])).toEqual([
+        [newer.id, "ready"],
+        [older.id, "closed"],
+      ]);
+    } finally {
+      await h.harness.lifecycle.dispose();
+    }
+  });
+
   it("returns browser-host image paths through the CLI without registering tools", async () => {
     const h = await setup();
     try {
