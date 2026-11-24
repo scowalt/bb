@@ -30,7 +30,6 @@ const session: Session = {
   id: "1a12a3f1-12de-4fbb-a011-df0905678757",
   threadId: "thr_1",
   hostId: "host",
-  backend: "local",
   profile: "default",
   state: "ready",
   createdAt: 1,
@@ -127,7 +126,7 @@ describe("inline browser preview", () => {
         }),
       },
     });
-    await slot.findByAltText("Live view of Headless browser");
+    await slot.findByAltText("Live view of Remote browser");
     expect(slot.getByText("data:")).toBeTruthy();
     expect(slot.queryByText(/very-long-inline-page/)).toBeNull();
   });
@@ -141,7 +140,7 @@ describe("inline browser preview", () => {
         }),
       },
     });
-    await slot.findByAltText("Live view of Headless browser");
+    await slot.findByAltText("Live view of Remote browser");
     expect(slot.getAllByText("about:blank")).toHaveLength(1);
   });
 
@@ -244,20 +243,6 @@ describe("inline browser preview", () => {
     expect(
       slot.queryByRole("button", { name: "Expand browser preview" }),
     ).toBeNull();
-  });
-
-  it("never previews the in-app desktop browser", async () => {
-    const slot = renderSlot(directive, props(), {
-      rpc: {
-        preview: () => ({
-          session: { ...session, backend: "desktop" },
-          frame: null,
-        }),
-      },
-    });
-    await slot.findByText("Unavailable");
-    expect(slot.queryByRole("img")).toBeNull();
-    expect(previewInputs(slot)).toHaveLength(1);
   });
 
   it("gives up on a session it can never read, such as one copied into a fork", async () => {

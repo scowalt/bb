@@ -53,7 +53,7 @@ export function pageLocation(url: string): string {
 
 export function pageTitle(frame: PreviewFrame | null): string {
   const title = frame?.title.trim() ?? "";
-  return title === "" || title === frame?.url ? "Headless browser" : title;
+  return title === "" || title === frame?.url ? "Remote browser" : title;
 }
 
 export function useLivePreview(args: {
@@ -88,13 +88,8 @@ export function useLivePreview(args: {
           size,
         });
         if (cancelled) return;
-        if (
-          result.session.state !== "ready" ||
-          result.session.backend !== "local"
-        ) {
-          setStatus(
-            result.session.backend === "local" ? "ended" : "unavailable",
-          );
+        if (result.session.state !== "ready") {
+          setStatus("ended");
           return;
         }
         failures = 0;
