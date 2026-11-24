@@ -77,26 +77,28 @@ export const PLUGINS_STEP: GuideStep = {
 
 export const SIGN_INS_STEP: GuideStep = {
   id: "sign-ins",
-  title: "Import your browser logins",
-  lead: "Your agent can open the sites you use, logged in as you.",
+  title: "Sign in once in the Remote browser",
+  lead: "Your agent uses the same browser you do, so it opens your sites logged in as you.",
   body: (
     <Substeps>
       <li>
-        In the bb desktop app, open <Ui icon="settings">Settings → Browser</Ui>.
+        Open a thread on the machine your agent will use. Open the side panel{" "}
+        <Ui icon="side-panel" /> (⌘ J), choose <Ui icon="plus" />, then{" "}
+        <strong>Remote browser</strong>.
       </li>
       <li>
-        If a browser shows <strong>Running</strong>, quit it and choose{" "}
-        <strong>Recheck</strong>.
+        Choose <strong>Start browser</strong> if it isn't running. Go to each
+        site your agent needs and sign in.
       </li>
       <li>
-        Choose <strong>Import…</strong> next to your browser, like Chrome, and
-        pick a profile.
+        That's it. The browser keeps your logins on that machine, even after it
+        restarts, and every thread there shares them.
       </li>
     </Substeps>
   ),
   shot: {
-    src: "/guides/agent-browser/window-sign-ins.webp",
-    alt: "bb's Browser settings listing Google Chrome (running, quit to import), Chromium with an Import button, and Safari needing Full Disk Access",
+    src: "/guides/agent-browser/window-remote-browser.webp",
+    alt: "A bb thread where the agent is waiting for a sign-in, next to the Acme Analytics sign-in page in the side panel's Remote browser tab",
     width: 2048,
     height: 1280,
   },
@@ -124,16 +126,12 @@ export const BROWSER_TROUBLESHOOTING: [GuideFaq, ...GuideFaq[]] = [
       <ol>
         <li>
           Use the bb desktop app. Annotations only work in a{" "}
-          <strong>Browser</strong> tab there, not in the web app or the live
-          preview in a thread.
+          <strong>Browser</strong> tab there, not in the Remote browser or the
+          live preview in a thread.
         </li>
         <li>
           In <strong>Plugins</strong>, open <strong>Agent Annotations</strong>{" "}
           and turn on its switch.
-        </li>
-        <li>
-          If your agent is using the tab, choose <strong>Take over</strong>{" "}
-          first.
         </li>
       </ol>
     ),
@@ -148,11 +146,8 @@ export const BROWSER_TROUBLESHOOTING: [GuideFaq, ...GuideFaq[]] = [
         </li>
         <li>
           The first run installs the browser tools on that machine, so it needs
-          network access and npm. A fresh browser also needs Chrome or Chromium
-          installed there.
-        </li>
-        <li>
-          For a Browser tab, keep the bb desktop app open, then ask again.
+          network access and npm. It also needs Chrome or Chromium installed
+          there.
         </li>
       </ol>
     ),
@@ -162,32 +157,17 @@ export const BROWSER_TROUBLESHOOTING: [GuideFaq, ...GuideFaq[]] = [
     answer: (
       <ol>
         <li>
-          A fresh browser starts signed out. Ask your agent to use a Browser tab
-          instead.
+          Each machine has its own Remote browser. Sign in from a thread on the
+          same machine as your agent's thread.
         </li>
         <li>
-          Import from <Ui icon="settings">Settings → Browser</Ui> again.
-          Importing copies your logins once, so newer logins don't carry over.
+          Logins you import in <Ui icon="settings">Settings → Browser</Ui> go to
+          the desktop app's Browser tabs, not the Remote browser. Sign in once
+          in the Remote browser instead.
         </li>
         <li>
-          Still signed out? Sign in once in a Browser tab. It stays signed in.
-        </li>
-      </ol>
-    ),
-  },
-  {
-    question: "I can't import from my browser",
-    answer: (
-      <ol>
-        <li>
-          Quit that browser completely, then choose <strong>Recheck</strong>.
-        </li>
-        <li>
-          For Safari, choose <strong>Grant access…</strong> and turn on Full
-          Disk Access for bb. Chrome may ask for Keychain access; allow it.
-        </li>
-        <li>
-          Choose <strong>Refresh</strong> to look for browsers again.
+          If your agent asked for a clean, signed-out browser, ask it to use the
+          default one.
         </li>
       </ol>
     ),
@@ -196,8 +176,9 @@ export const BROWSER_TROUBLESHOOTING: [GuideFaq, ...GuideFaq[]] = [
     question: "The live preview says Ended",
     answer: (
       <p>
-        Your agent closed its browser, or it sat unused for five minutes. The
-        thread keeps the last view. Ask your agent to open it again.
+        Your agent closed its browser session, or it sat unused for 30 minutes.
+        The thread keeps the last view. Ask your agent to open it again. Your
+        tabs and logins stay in the Remote browser.
       </p>
     ),
   },
@@ -206,12 +187,21 @@ export const BROWSER_TROUBLESHOOTING: [GuideFaq, ...GuideFaq[]] = [
 export const BROWSER_FAQ: GuideFaq[] = [
   AGENTS_FAQ,
   {
+    question: "Does it keep working when my laptop sleeps?",
+    answer: (
+      <p>
+        Yes, if your agent runs on another machine, like a dev box. The browser
+        runs there, not on your laptop, so you can close the lid and check the
+        result later from the web or your phone.
+      </p>
+    ),
+  },
+  {
     question: "Do I need the desktop app?",
     answer: (
       <p>
-        Not for a fresh browser: your agent can open Chrome on any connected Mac
-        or Linux machine, and you watch it in the thread. Browser tabs, your
-        logins, and annotations need the desktop app.
+        No. The Remote browser works in the web app too. Only annotations need
+        the desktop app.
       </p>
     ),
   },
@@ -219,9 +209,9 @@ export const BROWSER_FAQ: GuideFaq[] = [
     question: "Can I stop the agent or step in?",
     answer: (
       <p>
-        Yes. A Browser tab shows a bar while your agent controls it. Choose{" "}
-        <strong>Take over</strong> to click and type yourself, like to enter a
-        sign-in code, or <strong>Stop</strong> to end its control.
+        Yes. You and your agent share the browser. Click and type in the Remote
+        browser tab any time, like to enter a sign-in code. To stop your agent,
+        stop the thread.
       </p>
     ),
   },
@@ -229,21 +219,21 @@ export const BROWSER_FAQ: GuideFaq[] = [
     question: "Can my agent see my passwords?",
     answer: (
       <p>
-        No. bb imports your logins, not your saved passwords, so your agent
-        opens sites already signed in without seeing a password. Your logins
-        stay in bb's Browser on this computer, and the prompt from{" "}
+        You sign in yourself, so you never give your agent a password. The
+        browser keeps you logged in, and your agent uses that. The prompt from{" "}
         <strong>Copy for agent</strong> tells your agent never to read or print
-        them.
+        your logins. Anyone who can use that machine can use them, so sign in
+        only on machines you trust.
       </p>
     ),
   },
   {
-    question: "Can the browser run on a different computer?",
+    question: "Can the browser run on a different machine?",
     answer: (
       <p>
-        Yes. Ask for the browser on the machine you want. There,{" "}
-        <code>localhost</code> means that computer, so use an address it can
-        reach.
+        Yes. Ask for the browser on the machine you want, and sign in there
+        once. There, <code>localhost</code> means that machine, so use an
+        address it can reach.
       </p>
     ),
   },
@@ -251,8 +241,8 @@ export const BROWSER_FAQ: GuideFaq[] = [
     question: "Does it need macOS Automation permission?",
     answer: (
       <p>
-        No. Browser Automation talks to Chrome and bb's Browser directly, so it
-        doesn't need Accessibility or Automation permission.
+        No. Browser Automation runs Chrome in the background and controls it
+        directly, so it doesn't need Accessibility or Automation permission.
       </p>
     ),
   },

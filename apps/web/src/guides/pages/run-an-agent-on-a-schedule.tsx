@@ -76,9 +76,9 @@ export const guide: Guide = {
           Does the job need a site you're signed in to, like Linear or your
           analytics?{" "}
           <a href="/guides/agent-browser#sign-ins">
-            Import your browser logins
+            Sign in once in the Remote browser
           </a>{" "}
-          into bb first.
+          on the machine the automation runs on.
         </p>
       ),
       shot: {
