@@ -31,6 +31,22 @@ process.on('SIGTERM', stop);
 process.on('SIGINT', stop);
 `;
 
+export function baseEnvironment(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const key of [
+    "PATH",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "TMPDIR",
+    "XDG_RUNTIME_DIR",
+    "DBUS_SESSION_BUS_ADDRESS",
+  ]) {
+    if (process.env[key]) env[key] = process.env[key];
+  }
+  return env;
+}
+
 export function supervise(
   command: string,
   args: string[],
@@ -61,6 +77,7 @@ export function supervise(
   });
   return {
     alive: () => !exited,
+    exited: completion,
     async close() {
       child.stdin.end();
       await completion;
