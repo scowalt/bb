@@ -1,16 +1,16 @@
 # Browser Automation for BB
 
-Thread-owned browser scripts, desktop attachment, and local headless Chrome
-on enrolled hosts. Requires the public
-`bb.sdk.experimental_desktopBrowsers` API (SDK 0.4.48 or newer).
+Thread-owned browser scripts in the remote browser: headless Chrome on an
+enrolled bb host that the user also sees and controls in the side panel's
+Remote browser tab. Agents and the user share one signed-in browser.
 
 Browser Automation is optional and disabled by default. Enable it in plugin
 settings when you want to use it.
 
 The plugin was scaffolded with `bb plugin new browser-automation`. It has server, host,
 app, CLI, RPC, and a bundled skill. Agents use the CLI through the skill. Screenshot
-commands return temporary JPEG file paths and the browser host ID. Local headless
-sessions show a live preview inline in the chat that expands into a lightbox; see
+commands return temporary JPEG file paths and the browser host ID. Sessions show
+a live preview inline in the chat that expands into a lightbox; see
 [Live preview](#live-preview). Screenshot cards and a screenshot sidebar viewer are not included. Cloud provisioning and arbitrary CDP endpoints are excluded.
 
 ## Runtime installation and provenance
@@ -94,23 +94,26 @@ Headless sessions need Chrome/Chromium on that host. The plugin checks
 `<plugin host dataDir>/runtime/chrome`, the standard macOS Chrome path, then
 `google-chrome`, `google-chrome-stable`, `chromium`, and `chromium-browser` on
 PATH. The `runtime/chrome` entry can be a symlink to an installed executable.
-Plugin-owned local/headless Chrome always launches with `--no-sandbox`, disabling
+Plugin-owned Chrome always launches with `--no-sandbox`, disabling
 Chrome's sandbox so it can run on hosts that restrict unprivileged user namespaces.
 It also launches with `--password-store=basic` and `--use-mock-keychain`; without
 them, Chrome waits about 25 seconds for a desktop keyring on the first request
 of a headless session. It reports the host Chrome's version in a regular,
-non-headless user agent. Desktop sessions attach to an existing browser and do
-not change its launch flags.
+non-headless user agent.
 
 ## CLI and agent workflow
 
-Choose both the backend and its host explicitly. There is no silent fallback or
-profile migration. Find desktop instances through BB's core desktop-browser
-CLI/SDK discovery. The selected instance's generation is resolved on opening.
+A bare `open` starts the remote browser on the host of the thread's
+environment with the `default` profile, the same browser the side panel shows.
+`--machine` picks another host, `--profile` another persistent profile, and
+`--temporary` a throwaway profile. `--profile` and `--temporary` cannot be
+combined. A thread without an environment needs `--machine`.
+The agent instructions tell agents to browse only with `bb browser-automation`.
+They also tell agents not to drive the user's desktop in-app browser with
+`bb browser`; those commands are for the user's own tabs.
 
 ```sh
-bb browser-automation open --backend local --headless --machine <host-id> [--profile <name>] --json
-bb browser-automation open --backend desktop --machine <desktop-host-id> --desktop <instance-id> --json
+bb browser-automation open [--machine <name-or-id>] [--profile <name> | --temporary] --json
 bb browser-automation list --json
 bb browser-automation run <session-id> --script 'const p = await browser.getPage("main"); await p.goto("https://example.com"); await p.snapshot()' --json
 bb browser-automation run <session-id> --script-file ./check.js --script-host <invoking-host-id> --timeout-ms 30000 --json
@@ -128,23 +131,10 @@ browser host. Relative paths use the invoking CLI working directory. Browser
 file reads/writes still occur on the browser's host; scripts are not run in the
 workspace directory.
 
-Desktop sessions create a tab in the BB browser's profile, so pages load with
-the user's signed-in cookies, including cookies imported from another browser.
-Acquiring control opens the side panel and selects its browser tab only when
-the owning thread is already focused. New or activated controller pages follow
-the same rule. Automation does not switch threads or bring the desktop window
-forward. While controlled, a desktop tab never takes keyboard focus from the
-composer or other apps; press Take over to type into it. Pass
-`--tab <tab-id>` only to take over an existing tab; `close` preserves that tab.
-The plugin records every tab opened under the session's control lease, and
-`close` disposes the plugin-created tab and those pages. `stop` releases
-control and preserves desktop tabs, including plugin-created ones, until close
-or cleanup.
-
-Without `--profile`, a local session owns a Chrome process and a separate,
-empty profile in a temporary directory that `close` deletes. With
-`--profile <name>` (1-40 lowercase letters, digits, and dashes, starting with a
-letter or digit) it uses `<plugin host dataDir>/profiles/<name>` on that host,
+With `--temporary`, a session owns a Chrome process and a separate, empty
+profile in a temporary directory that `close` deletes. Otherwise it uses the
+`default` profile, or `--profile <name>` (1-40 lowercase letters, digits, and
+dashes, starting with a letter or digit). A profile lives at `<plugin host dataDir>/profiles/<name>` on that host,
 and every open session naming the profile shares one Chrome. Closing such a
 session closes only the named pages it opened. When the last session on a
 profile closes, the host saves up to 20 open http(s) tab URLs to
@@ -155,20 +145,16 @@ same profile to finish. Profile browsers render at device scale factor 2, so
 the side panel stays sharp on high-density screens; temporary-profile browsers
 render at 1. Full-size previews are JPEG frames up to 2560 pixels on a side,
 and the host lowers their quality step by step when a frame would exceed the
-preview frame limit. `--profile` is local only; desktop sessions already use
-the BB browser's profile. The app's remote browser side panel opens sessions
-with the `default` profile, and the agent instructions tell agents to do the
-same, so the agent and the user share one browser. Each session owns a
+preview frame limit. The app's remote browser side panel opens sessions
+with the `default` profile, and so does a bare `open`, so the agent and the
+user share one browser. Each session owns a
 fresh `DEV_BROWSER_HOME` and socket under the worker's temporary directory.
 Pages and cookies persist between runs in that session. `stop`, timeout, or
-cancellation terminates that local session; open another session to resume.
-`close` disposes its processes and session directory. Tabs taken over with
-`--tab` remain open. Sessions close after 30 minutes without `run`, `pages`, or `screenshot` activity.
+cancellation terminates that session; open another session to resume.
+`close` disposes its processes and session directory. Sessions close after 30 minutes without `run`, `pages`, or `screenshot` activity.
 Each operation renews expiry at its start and completion, up to eight hours from
 creation; active scripts do not count as idle. The hard deadline also stops running
-work. Desktop control leases and connections cannot be renewed through the current
-API, so desktop sessions retain their earlier deadline (at most 30 minutes from
-creation). `list` and thumbnail previews do not renew expiry; full-size
+work. `list` and thumbnail previews do not renew expiry; full-size
 previews and viewer input do. Archiving, deleting, or failing a thread
 closes its sessions; normal idle turns preserve them. Externally invoked CLI
 runs remain subject to the same per-run timeout and absolute session expiry. Run timeouts default to 30 seconds and are
@@ -194,12 +180,14 @@ The CLI uses the same validated operation handlers as RPC. The
 RPC contract in `contracts.ts` exposes `open`, `list`, `run`, `pages`,
 `screenshot`, `preview`, `input`, `openForThread`, `stop`, and `close`.
 RPC inputs include `threadId`; session operations also include `sessionId`.
-`open.selection` is `{backend:"local",hostId,profile?}` or
-`{backend:"desktop",hostId,instanceId,tabId?}`. A tab ID takes over that existing tab.
+`open` takes `{threadId, hostId?, profile}`. A missing `hostId` means the
+host of the thread's environment. `profile` defaults to `"default"`, and
+`null` means a temporary profile. Stored session records from the removed
+desktop backend are deleted when the plugin starts.
 `openForThread` serves the side panel: it returns the thread's newest ready
-local session, or opens one with the `default` profile on the host of the
+session, or opens one with the `default` profile on the host of the
 thread's environment. Concurrent calls for one thread share a single open. A
-thread without an environment fails with a pointer to the CLI.
+thread without an environment fails with a pointer to `open --machine`.
 Agents discover the commands through the skill and CLI help.
 
 The host supervises Chrome and the DevBrowser daemon as separate children. Each
@@ -208,21 +196,18 @@ a worker crash does not leave browsers running. Stop sends TERM then KILL after
 1.5 seconds. The plugin does not discover or kill processes from PID files.
 `stop` and `close` retire the session before cleanup starts, so it accepts no
 more commands and an `open` still starting is aborted. They succeed only once
-the host has released the browser processes and session directory and the
-desktop lease and tabs are released. Otherwise they fail with the reason,
+the host has released the browser processes and session directory. Otherwise they fail with the reason,
 including a host that does not answer within 10 seconds. Concurrent closes
 share one outcome, and closing again retries cleanup. A host worker repeats a
 session's close outcome until that worker exits, and refuses to reopen a
 session it already closed.
 Server metadata persists ownership and cleanup needs; restart reconciles active
-sessions, retries unfinished cleanup, and revokes their desktop leases. Unreachable desktop cleanup remains
-recorded for reconciliation on a later plugin load. Desktop lease loss is
-observed using the public SDK subscription; core revokes the CDP endpoint
-immediately, and the plugin stops its worker session when notified.
+sessions and retries unfinished cleanup. Unreachable cleanup remains recorded
+for reconciliation on a later plugin load.
 
 ## Live preview
 
-Opening a local headless session returns a `previewDirective` in the CLI
+Opening a session returns a `previewDirective` in the CLI
 result, `::browser-preview{session="<session-id>"}`. The plugin's agent
 instructions tell the agent to paste it once, as a standalone line, in its next
 message. BB renders that line inline in the chat as a live thumbnail of the
@@ -231,9 +216,7 @@ The card collapses, and its expand button opens the same live view in a
 lightbox sized to the window; on compact screens the lightbox is the shared
 responsive drawer. The lightbox is mounted once per window as an app overlay,
 not inside the card, so it stays open and live when the timeline paginates the
-card away. Desktop sessions return no directive and never preview: that
-browser is already visible in the app's side panel, and its brokered connection
-is not reused for previews.
+card away.
 
 Frames come from a second CDP connection that the host worker opens to the
 session's own Chrome (`preview.ts`). It runs `Page.startScreencast` as
@@ -252,15 +235,15 @@ delay one.
 
 ### Viewer input
 
-The `input` RPC takes a batch of 1-64 viewer actions for a ready local session
+The `input` RPC takes a batch of 1-64 viewer actions for a ready session
 the thread owns and applies them to the previewed tab over the same CDP
 connection: mouse and wheel events (`Input.dispatchMouseEvent`), keys
 (`Input.dispatchKeyEvent`), text (`Input.insertText`), navigation, back and
 forward through the tab's history, reload, resizing the window
 (`Browser.setWindowBounds`, 320-2560 by 240-2560), and selecting, opening, or
 closing tabs. A new tab becomes the previewed tab. Input waits up to ten
-seconds for the cast to attach and fails for desktop sessions, sessions that
-are not ready, and sessions of other threads. Input does not enter the run
+seconds for the cast to attach and fails for sessions that are not ready and
+sessions of other threads. Input does not enter the run
 queue, so the user and a running script can act on the same page at once.
 
 The app long-polls the `preview` RPC with the last sequence it rendered and the
@@ -311,12 +294,9 @@ It verifies named pages, navigation, clicking, JPEG bytes, a live preview that
 follows a second named page while its script runs and switches to full-size
 frames on request, serialization,
 independent session cancellation, a synchronous infinite-loop timeout,
-reopening, closing a runtime session (further runs are rejected), and
-preservation of an attached browser and its page state after that session
-closes.
+reopening, and closing a runtime session (further runs are rejected).
 Both smokes link directly to Chrome and exercise the production launch flags
-without a wrapper. The attachment smoke also launches its separate browser
-fixture with `--no-sandbox` so it works on hosts with restricted user namespaces.
+without a wrapper.
 
 Build with a current BB CLI: an older installed CLI can successfully bundle the
 sources while stamping old SDK metadata. Inspect `dist/*.meta.json` before any
