@@ -1,45 +1,40 @@
 ---
 name: browser-automation
-description: Use the Browser Automation BB plugin to inspect and automate persistent browser pages in an explicit desktop or local headless session. Use for browser navigation, snapshots, clicking, forms, and verification screenshots.
+description: Use the Browser Automation BB plugin for all web browsing. It drives the remote browser on the thread's host, the same signed-in browser the user sees in the side panel. Use for browser navigation, snapshots, clicking, forms, and verification screenshots.
 ---
 
-Use `bb browser-automation`. Run `bb browser-automation list --json` first and
-reuse a `ready` session the thread already has; the user may have opened one
-from the side panel. Otherwise open one session, retain its session ID, then
-inspect, act, and verify in short scripts.
+Use `bb browser-automation` for all web browsing. It drives the remote browser
+on a bb host: headless Chrome that the user sees and controls in the side
+panel's Remote browser tab. Do not use `bb browser` to drive the user's desktop
+in-app browser; those commands are for the user's own tabs.
 
-`--machine` accepts an exact host ID or an unambiguous machine name. Exact IDs
-take precedence over names; unknown or ambiguous names fail before opening a session.
-
-Choose `--backend local --headless --machine <host-id> --profile default` for
-headless Chrome on an enrolled host. A profile keeps cookies, logins, and open
-tabs on that host across sessions, and every session naming it shares one
-browser, the same one the user sees in the side panel's remote browser tab.
-Profile names use 1-40 lowercase letters, digits, and dashes. Omit `--profile`
-only when the task needs a fresh, empty browser that is discarded on close.
-Choose `--backend desktop --machine <host-id> --desktop
-<instance-id>` for a new desktop automation tab. Desktop tabs use the BB
-browser's profile, including the user's signed-in cookies. Starting desktop
-control opens the side panel and selects the browser tab only if its thread is
-already focused. New or activated controller pages follow the same rule;
-automation does not switch threads or bring the desktop window forward. While
-controlled, a desktop tab never takes keyboard focus from the composer or other
-apps; the user presses Take over to type into it. Headless sessions remain headless.
-Plugin-owned local/headless Chrome launches with `--no-sandbox`, disabling Chrome's
-sandbox. Desktop attachment does not change the browser's launch flags.
-Resolve the explicit instance with `bb browser instances --host <host-id> --json`
-first. Never silently choose a different host or mode.
-Adding `--tab <tab-id>` takes control of an existing tab; do so only when the
-user asked to use that tab. The CLI uses the
-current thread, or `--thread <id>` outside a thread. Each session belongs to
-that thread.
-
-CLI opening:
+Run `bb browser-automation list --json` first and reuse a `ready` session the
+thread already has; the user may have opened one from the side panel.
+Otherwise open one session, keep its session ID, then inspect, act, and verify
+in short scripts.
 
 ```sh
-bb browser-automation open --backend local --headless --machine <host-id> --profile default --json
-bb browser-automation open --backend desktop --machine <host-id> --desktop <instance-id> --json
+bb browser-automation open --json
 ```
+
+A bare `open` starts the browser on the host of the thread's environment with
+the `default` profile. That is the browser the user sees in the side panel, so
+you and the user share its cookies, logins, and tabs. The profile keeps them on
+that host across sessions, and every session that names it shares one browser.
+
+- `--machine <name-or-id>` runs the browser on another host. It accepts an
+  exact host ID or an unambiguous machine name. Exact IDs take precedence over
+  names; unknown or ambiguous names fail before opening a session. A thread
+  without an environment needs `--machine`.
+- `--profile <name>` uses another persistent profile on that host. Profile
+  names use 1-40 lowercase letters, digits, and dashes.
+- `--temporary` uses a clean, signed-out profile that is deleted on close. Use
+  it only when the task needs a fresh browser. It cannot be combined with
+  `--profile`.
+
+The CLI uses the current thread, or `--thread <id>` outside a thread. Each
+session belongs to that thread. Plugin-owned Chrome launches with
+`--no-sandbox`, disabling Chrome's sandbox.
 
 Run scripts:
 
@@ -80,14 +75,12 @@ image bytes into the conversation. Read or copy captures before closing the
 session: cleanup removes its temporary directory. Remove local copies when
 finished.
 
-A local headless `open` returns a `previewDirective`, for example
+`open` returns a `previewDirective`, for example
 `::browser-preview{session="<session-id>"}`. Copy it into your next message
 exactly once as a standalone line, before you continue working. Do not wrap it
 in backticks or a code fence, and do not invent or edit the session ID. BB
 renders it as a live view of that browser in the chat, which the user can
-expand, so they can watch while you work. Desktop
-sessions return no directive; that browser is already visible in the side
-panel. `bb browser-automation preview <session-id> --json` reports the live
+expand, so they can watch while you work. `bb browser-automation preview <session-id> --json` reports the live
 frame's `url`, `title`, size, `sequence`, open `tabs`, and `activeTabId` without
 image bytes; it is not a substitute for `screenshot` when you need to see the
 page. The user can click, type, scroll, navigate, and switch tabs in the
@@ -99,11 +92,10 @@ trusted JavaScript with Puppeteer-style DevBrowser APIs, not a sandbox.
 `--script-file` requires `--script-host <host-id>` naming the source host explicitly. Browser file
 operations and `localhost` refer to the browser host. Transfer files explicitly.
 
-Stop cancels running and queued work and releases desktop control. Cancellation
+Stop cancels running and queued work. Cancellation
 and timeout stop the session too; open a new session to resume. A run whose
 output passes 512 KB fails with exit code 1 but keeps the session open; return
-or print less and run again. Close disposes
-owned Chrome and desktop tabs the session opened while preserving a `--tab` tab.
+or print less and run again. Closing a temporary session disposes its Chrome.
 Closing a profile session closes only the named pages it opened; the browser
 keeps running for other sessions on that profile, and the last one to close
 saves its tabs and cookies.
@@ -112,9 +104,7 @@ accepts no more commands, but its browser may still be running; run `close`
 again to retry cleanup. `run`, `pages`, and `screenshot` renew expiry at their start and completion to
 30 minutes later, capped at eight hours from creation. Active scripts are not idle;
 the hard deadline still stops running work. `list` and thumbnail previews do not
-renew expiry; the full-size viewer and the user's input in it do. Desktop leases and connections cannot be renewed through the current API,
-so desktop sessions still end at their earlier deadline (at most 30 minutes from
-creation). Timeouts default to 30 seconds, maximum 120 seconds: pass either
+renew expiry; the full-size viewer and the user's input in it do. Timeouts default to 30 seconds, maximum 120 seconds: pass either
 `--timeout-ms <1000-120000>` or `--timeout <duration>`, where a duration carries
 a unit (`90s`, `2m`, `1500ms`) and a bare number is read as seconds (1-120) or
 milliseconds (1000-120000).
@@ -127,8 +117,8 @@ prints `{"ok":false,"error":{"code":…,"message":…,"hint":…}}` on stdout (c
 `session_unavailable` when the session stopped or expired, `screenshot_limit`
 for capture limits) while the same message stays on stderr.
 
-An unavailable backend or a failed runtime install is an actionable setup
-error, not permission to attach to a random browser. The first open on a host
+An unavailable host or a failed runtime install is an actionable setup error,
+not permission to use another browser. The first open on a host
 installs the pinned `dev-browser` npm release into plugin-owned host storage
 there and verifies its provenance and digest; it needs npm, network access, and
 Chrome on that host, and can take a minute. Later opens reuse the verified

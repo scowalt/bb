@@ -37,7 +37,8 @@ bb status --json
 | `AGENTS.md` and skills                                                  | `bb guide agent-configuration` |
 | Plugins and marketplaces                                                | `bb guide plugins`             |
 | Scheduled work                                                          | the `automations` skill        |
-| Built-in browser tabs                                                   | `bb guide browser`             |
+| Browse the web, test a page, take screenshots                           | the `browser-automation` skill |
+| The user's own desktop in-app browser tabs                              | `bb guide browser`             |
 | `--json` output shapes and the error envelope                           | `bb guide json`                |
 | Writing theme CSS                                                       | references/theming.md          |
 
