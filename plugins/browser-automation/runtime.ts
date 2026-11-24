@@ -147,7 +147,7 @@ export interface RuntimeSession {
     timeoutMs: number,
     signal: AbortSignal,
   ): Promise<RunOutput>;
-  preview: PreviewSource | null;
+  preview: PreviewSource;
   close(): Promise<void>;
 }
 
@@ -159,7 +159,6 @@ export async function createRuntime(
     runtime: ResolvedRuntime;
     dataDir: string;
     tempDir: string;
-    connectionUrl?: string;
     profile?: string;
     signal: AbortSignal;
   },
@@ -171,7 +170,6 @@ export async function createRuntime(
   const env = runtimeEnvironment(home);
   const processes: ReturnType<typeof supervise>[] = [];
   let browser: HostBrowser | null = null;
-  let connectionUrl: string | null = null;
   let closed = false;
   let closing: Promise<void> | null = null;
   let preview: PreviewSource | null = null;
@@ -183,9 +181,9 @@ export async function createRuntime(
     stopped.abort();
     preview?.close();
     const attempt = (async () => {
+      const shared = browser;
       if (
-        browser?.persistent &&
-        connectionUrl !== null &&
+        shared?.persistent &&
         processes.length > 0 &&
         processes.every((child) => child.alive())
       )
@@ -194,7 +192,7 @@ export async function createRuntime(
           [
             "--json",
             "--connect",
-            connectionUrl,
+            shared.connectionUrl,
             "--timeout",
             "5",
             "-e",
@@ -204,7 +202,7 @@ export async function createRuntime(
           AbortSignal.timeout(5_000),
         ).catch(() => {});
       await Promise.all(processes.map((child) => child.close()));
-      await browser?.release();
+      await shared?.release();
       await rm(home, { recursive: true, force: true });
     })().catch((error: unknown) => {
       if (closing === attempt) closing = null;
@@ -229,25 +227,13 @@ export async function createRuntime(
     }
   }
   try {
-    let url: string;
-    if (args.connectionUrl === undefined) {
-      browser = await browsers.acquire({
-        dataDir: args.dataDir,
-        tempDir: args.tempDir,
-        profile: args.profile ?? null,
-        signal: startup,
-      });
-      url = browser.connectionUrl;
-    } else url = args.connectionUrl;
-    const endpoint = new URL(url);
-    if (
-      endpoint.protocol !== "ws:" ||
-      !["127.0.0.1", "localhost", "[::1]"].includes(endpoint.hostname)
-    )
-      throw new Error(
-        "Desktop connection must be a private loopback WebSocket on the selected host",
-      );
-    connectionUrl = url;
+    browser = await browsers.acquire({
+      dataDir: args.dataDir,
+      tempDir: args.tempDir,
+      profile: args.profile ?? null,
+      signal: startup,
+    });
+    const url = browser.connectionUrl;
     processes.push(supervise(binary, ["daemon"], env));
     await waitForFile(join(home, "daemon.pid"));
     const run = (
@@ -306,7 +292,7 @@ export async function createRuntime(
       return result;
     };
     await run("await browser.listPages()", 30_000, startup);
-    if (browser) preview = createPreview(url);
+    preview = createPreview(url);
     return { run, preview, close };
   } catch (error) {
     await close();

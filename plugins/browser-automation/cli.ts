@@ -6,8 +6,7 @@ import {
   type PluginCliRegistration,
   type PluginCliResult,
 } from "@get-bb/plugin-sdk";
-import type { z } from "zod";
-import { profileSchema, type rpcContract } from "./contracts.js";
+import { DEFAULT_PROFILE, profileSchema } from "./contracts.js";
 
 export type BrowserCliMethod =
   | "open"
@@ -22,7 +21,8 @@ export type BrowserCliMethod =
 export interface BrowserCliInput {
   threadId: string;
   sessionId?: string;
-  selection?: z.input<typeof rpcContract.open.input>["selection"];
+  hostId?: string;
+  profile?: string | null;
   script?: string;
   timeoutMs?: number;
   page?: string;
@@ -54,8 +54,7 @@ const JSON_OPTION = {
   description: "Emit machine-readable JSON",
 } as const;
 
-const REOPEN_HINT =
-  "Open a new session with `bb browser-automation open --backend <desktop|local> --machine <host-id>`.";
+const REOPEN_HINT = "Open a new session with `bb browser-automation open`.";
 
 function resolveThreadId(
   option: string | undefined,
@@ -84,115 +83,58 @@ export function createBrowserAutomationCli(deps: {
 }): PluginCliRegistration {
   return defineCli({
     name: "browser-automation",
-    summary: "Persistent DevBrowser desktop and headless sessions",
+    summary:
+      "Remote browser sessions on the thread's host, shared with the side panel",
     description:
-      "Sessions belong to the thread that opened them. run, pages, and screenshot renew expiry to 30 minutes after use, capped at 8 hours from creation.\nDesktop sessions also expire at their non-renewable control lease/connection deadline (at most 30 minutes).\nlist and thumbnail previews do not renew expiry; the full-size viewer and its input do. A stopped or expired session cannot be resumed; open a new one.",
+      "Sessions run in the remote browser on a bb host: the browser the user sees and controls in the side panel's Remote browser tab. By default they use the host's default profile, so the user and agents share one signed-in browser.\nSessions belong to the thread that opened them. run, pages, and screenshot renew expiry to 30 minutes after use, capped at 8 hours from creation.\nlist and thumbnail previews do not renew expiry; the full-size viewer and its input do. A stopped or expired session cannot be resumed; open a new one.",
     commands: {
       open: cliCommand({
         summary:
-          "Open a desktop or local headless session; --tab takes over an existing tab",
+          "Open a remote browser session on the thread's host, shared with the side panel",
+        constraints: [
+          { kind: "at-most-one", options: ["profile", "temporary"] },
+        ],
         options: {
-          backend: {
-            type: "enum",
-            values: ["desktop", "local"],
-            required: true,
-            description:
-              "desktop drives a connected browser instance; local runs headless on the host",
-          },
           machine: {
             type: "string",
-            required: true,
             placeholder: "name-or-id",
             description:
-              "Host that runs the browser: exact ID or unambiguous name",
-          },
-          desktop: {
-            type: "string",
-            placeholder: "instance-id",
-            description: "Desktop instance to drive (desktop backend only)",
-          },
-          tab: {
-            type: "string",
-            placeholder: "tab-id",
-            description:
-              "Existing desktop tab to control instead of opening one (desktop backend only)",
-          },
-          headless: {
-            type: "boolean",
-            description: "Required by the local backend, rejected by desktop",
+              "Host that runs the browser: exact ID or unambiguous name; defaults to the thread's environment host",
           },
           profile: {
             type: "string",
             placeholder: "name",
+            default: DEFAULT_PROFILE,
             description:
-              "Persistent host browser profile shared with the side panel, such as default (local backend only); omit for a temporary profile",
+              "Persistent browser profile on the host, shared with the side panel's Remote browser tab",
+          },
+          temporary: {
+            type: "boolean",
+            description:
+              "Use a clean, signed-out profile that is deleted when the session ends",
           },
           thread: THREAD_OPTION,
           json: JSON_OPTION,
         },
         run(input, ctx) {
           const threadId = resolveThreadId(input.options.thread, ctx);
-          const hostId = input.options.machine;
-          if (input.options.backend === "local") {
-            if (
-              !input.options.headless ||
-              input.options.desktop !== undefined ||
-              input.options.tab !== undefined
-            ) {
-              throw new PluginCliError(
-                "Local sessions require --headless and cannot select desktop tabs",
-                { code: "invalid_selection" },
-              );
-            }
-            const profile = input.options.profile;
-            if (
-              profile !== undefined &&
-              !profileSchema.safeParse(profile).success
-            ) {
-              throw new PluginCliError(
-                "Profile names use 1-40 lowercase letters, digits, and dashes, starting with a letter or digit",
-                { code: "invalid_selection" },
-              );
-            }
-            return deps.execute(
-              {
-                method: "open",
-                input: {
-                  threadId,
-                  selection: {
-                    backend: "local",
-                    hostId,
-                    ...(profile === undefined ? {} : { profile }),
-                  },
-                },
-              },
-              ctx,
-            );
-          }
-          const instanceId = input.options.desktop;
-          if (
-            instanceId === undefined ||
-            input.options.headless ||
-            input.options.profile !== undefined
-          ) {
+          const profile = input.options.temporary
+            ? null
+            : input.options.profile;
+          if (profile !== null && !profileSchema.safeParse(profile).success) {
             throw new PluginCliError(
-              "Desktop sessions require --desktop <instance-id> and cannot use --headless or --profile",
+              "Profile names use 1-40 lowercase letters, digits, and dashes, starting with a letter or digit",
               { code: "invalid_selection" },
             );
           }
+          const hostId = input.options.machine;
           return deps.execute(
             {
               method: "open",
               input: {
                 threadId,
-                selection: {
-                  backend: "desktop",
-                  hostId,
-                  instanceId,
-                  ...(input.options.tab === undefined
-                    ? {}
-                    : { tabId: input.options.tab }),
-                },
+                profile,
+                ...(hostId === undefined ? {} : { hostId }),
               },
             },
             ctx,
@@ -324,7 +266,7 @@ export function createBrowserAutomationCli(deps: {
       }),
       preview: cliCommand({
         summary:
-          "Describe the live preview frame of a local headless session, without image bytes",
+          "Describe the live preview frame of a session, without image bytes",
         positionals: [SESSION_POSITIONAL],
         options: {
           after: {
@@ -351,8 +293,7 @@ export function createBrowserAutomationCli(deps: {
           ),
       }),
       stop: cliCommand({
-        summary:
-          "Cancel queued and running work and release control; open a new session to resume",
+        summary: "Cancel queued and running work; open a new session to resume",
         positionals: [SESSION_POSITIONAL],
         options: { thread: THREAD_OPTION, json: JSON_OPTION },
         run: (input, ctx) =>
@@ -368,7 +309,8 @@ export function createBrowserAutomationCli(deps: {
           ),
       }),
       close: cliCommand({
-        summary: "Dispose owned browsers and tabs, preserving handed-off tabs",
+        summary:
+          "End the session and close its named pages; a shared profile keeps its other tabs",
         positionals: [SESSION_POSITIONAL],
         options: { thread: THREAD_OPTION, json: JSON_OPTION },
         run: (input, ctx) =>

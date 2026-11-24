@@ -156,7 +156,7 @@ export function createHostEntry(
   async function start(
     context: ExperimentalHostRpcContext,
     signal: AbortSignal,
-    browser: { connectionUrl?: string; profile?: string },
+    profile: string | undefined,
   ) {
     const attached = await attachRuntime(context);
     let runtime: ResolvedRuntime;
@@ -169,8 +169,7 @@ export function createHostEntry(
     return factory({
       ...context.experimental_paths,
       runtime,
-      connectionUrl: browser.connectionUrl,
-      profile: browser.profile,
+      profile,
       signal,
     });
   }
@@ -224,8 +223,6 @@ export function createHostEntry(
           throw new Error("Session already closed");
         if (sessions.size >= 32)
           throw new Error("Host browser session limit reached");
-        if (input.connectionUrl !== undefined && input.profile !== undefined)
-          throw new Error("A desktop connection cannot use a host profile");
         const abort = new AbortController();
         const signal = AbortSignal.any([
           context.signal,
@@ -233,7 +230,7 @@ export function createHostEntry(
           abort.signal,
         ]);
         const session: Session = {
-          runtime: start(context, signal, input),
+          runtime: start(context, signal, input.profile),
           abort,
           lease: context.experimental_retainWorker(),
           expiresAt: input.expiresAt,
@@ -281,10 +278,6 @@ export function createHostEntry(
       async preview(input, context) {
         const session = await available(input.sessionId);
         const runtime = await session.runtime;
-        if (!runtime.preview)
-          throw new Error(
-            "Live preview is available only for local headless sessions",
-          );
         if (input.size === "full") session.lastUsed = Date.now();
         return {
           frame: await runtime.preview.next(
@@ -302,10 +295,6 @@ export function createHostEntry(
       async input(input, context) {
         const session = await available(input.sessionId);
         const runtime = await session.runtime;
-        if (!runtime.preview)
-          throw new Error(
-            "Viewer input is available only for local headless sessions",
-          );
         session.lastUsed = Date.now();
         await runtime.preview.input(
           input.actions,

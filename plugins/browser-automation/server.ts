@@ -23,36 +23,28 @@ import {
 } from "./cli.js";
 import { previewDirective } from "./preview-directive.js";
 
-const desktopSchema = z
-  .object({
-    hostId: z.string(),
-    instanceId: z.string(),
-    generation: z.string(),
-    threadId: z.string(),
-    leaseId: z.string(),
-    tabId: z.string(),
-    owned: z.boolean(),
-    leasedTabIds: z.array(z.string()),
-  })
-  .strict();
 const recordSchema = z
   .object({
-    session: sessionSchema.extend({
-      profile: sessionSchema.shape.profile.default(null),
-    }),
-    desktop: desktopSchema.nullable(),
+    session: sessionSchema,
     lastUsed: z.number(),
     cleanupPending: z.boolean(),
   })
   .strict();
 type RecordEntry = z.infer<typeof recordSchema>;
-type DesktopTarget = z.infer<typeof desktopSchema>;
+const legacyRecordSchema = z
+  .object({
+    session: sessionSchema.extend({
+      backend: z.enum(["desktop", "local"]),
+      profile: sessionSchema.shape.profile.default(null),
+    }),
+    desktop: z.unknown(),
+    lastUsed: z.number(),
+    cleanupPending: z.boolean(),
+  })
+  .strict();
 const idleTimeoutMs = 30 * 60_000;
 const maxLifetimeMs = 8 * 60 * 60_000;
-const hardDeadline = (session: Session) =>
-  session.backend === "desktop"
-    ? Math.min(session.expiresAt, session.createdAt + maxLifetimeMs)
-    : session.createdAt + maxLifetimeMs;
+const hardDeadline = (session: Session) => session.createdAt + maxLifetimeMs;
 const previewWaitMs = 5_000;
 const runCallGraceMs = 10_000;
 const keyFor = (threadId: string, sessionId: string) =>
@@ -60,7 +52,6 @@ const keyFor = (threadId: string, sessionId: string) =>
 
 export default async function browserAutomationPlugin(bb: BbPluginApi) {
   const host = bb.hosts.experimental_client({ contract: hostContract });
-  const desktop = bb.sdk.experimental_desktopBrowsers;
   const active = new Map<string, RecordEntry>();
   const busy = new Map<string, number>();
   const pending = new Set<Promise<void>>();
@@ -69,7 +60,6 @@ export default async function browserAutomationPlugin(bb: BbPluginApi) {
     { state: "stopped" | "closed"; work: Promise<Session> }
   >();
   const opening = new Map<string, AbortController>();
-  const subscriptions = new Map<string, { dispose(): void }>();
   const lifecycle = new AbortController();
   const threadLifecycles = new Map<string, AbortController>();
   const save = (record: RecordEntry) =>
@@ -77,18 +67,6 @@ export default async function browserAutomationPlugin(bb: BbPluginApi) {
       keyFor(record.session.threadId, record.session.id),
       record,
     );
-  function trackLeasedTabs(
-    target: DesktopTarget,
-    tabs: Array<{ tabId: string; control: { leaseId: string } | null }>,
-  ) {
-    const added = tabs.filter(
-      (tab) =>
-        tab.control?.leaseId === target.leaseId &&
-        !target.leasedTabIds.includes(tab.tabId),
-    );
-    target.leasedTabIds.push(...added.map((tab) => tab.tabId));
-    return added.length > 0;
-  }
   async function owned(threadId: string, sessionId: string) {
     const record = recordSchema.parse(
       await bb.storage.kv.get(keyFor(threadId, sessionId)),
@@ -96,40 +74,6 @@ export default async function browserAutomationPlugin(bb: BbPluginApi) {
     if (record.session.threadId !== threadId || record.session.id !== sessionId)
       throw new Error("Session does not belong to this thread");
     return active.get(sessionId) ?? record;
-  }
-  async function releaseDesktop(
-    target: DesktopTarget,
-    state: "stopped" | "closed",
-  ): Promise<PromiseSettledResult<unknown>[]> {
-    const scope = {
-      hostId: target.hostId,
-      instanceId: target.instanceId,
-      generation: target.generation,
-      threadId: target.threadId,
-    };
-    await desktop.listTabs(scope).then(
-      ({ tabs }) => trackLeasedTabs(target, tabs),
-      () => {},
-    );
-    const results: PromiseSettledResult<unknown>[] = await Promise.allSettled([
-      desktop.releaseControl({ ...scope, leaseId: target.leaseId }),
-    ]);
-    const createdTabIds = new Set(target.leasedTabIds);
-    if (target.owned) createdTabIds.add(target.tabId);
-    else createdTabIds.delete(target.tabId);
-    if (state === "closed" && createdTabIds.size > 0)
-      results.push(
-        ...(await desktop.listTabs(scope).then(
-          ({ tabs }) =>
-            Promise.allSettled(
-              tabs
-                .filter((tab) => createdTabIds.has(tab.tabId))
-                .map((tab) => desktop.closeTab({ ...scope, tabId: tab.tabId })),
-            ),
-          (reason: unknown) => [{ status: "rejected" as const, reason }],
-        )),
-      );
-    return results;
   }
   async function finish(
     record: RecordEntry,
@@ -163,34 +107,26 @@ export default async function browserAutomationPlugin(bb: BbPluginApi) {
       opening.get(session.id)?.abort();
       if (state === "closed") active.delete(session.id);
       else active.set(session.id, record);
-      subscriptions.get(session.id)?.dispose();
-      subscriptions.delete(session.id);
       session.state = state;
       record.cleanupPending = true;
       await save(record);
-      const results = (
-        await Promise.all([
-          Promise.allSettled([
-            host.call(
-              "close",
-              { sessionId: session.id },
-              { hostId: session.hostId, signal: AbortSignal.timeout(10_000) },
-            ),
-          ]),
-          record.desktop ? releaseDesktop(record.desktop, state) : [],
-        ])
-      ).flat();
-      const failures = results.flatMap((result) =>
-        result.status === "rejected" ? [result.reason] : [],
-      );
-      record.cleanupPending = failures.length > 0;
+      const failure = await host
+        .call(
+          "close",
+          { sessionId: session.id },
+          { hostId: session.hostId, signal: AbortSignal.timeout(10_000) },
+        )
+        .then(
+          () => null,
+          (reason: unknown) => ({ reason }),
+        );
+      record.cleanupPending = failure !== null;
       await save(record);
-      if (failures.length > 0) {
-        const reasons = failures
-          .map((reason) =>
-            reason instanceof Error ? reason.message : String(reason),
-          )
-          .join("; ");
+      if (failure) {
+        const reasons =
+          failure.reason instanceof Error
+            ? failure.reason.message
+            : String(failure.reason);
         bb.log.warn(
           `Browser Automation cleanup on host ${session.hostId} failed: ${reasons}`,
         );
@@ -207,20 +143,38 @@ export default async function browserAutomationPlugin(bb: BbPluginApi) {
       cleanup.delete(record.session.id);
     }
   }
+  async function readStored(key: string): Promise<RecordEntry | null> {
+    const stored = await bb.storage.kv.get(key);
+    const current = recordSchema.safeParse(stored);
+    if (current.success) return current.data;
+    const legacy = legacyRecordSchema.safeParse(stored);
+    if (!legacy.success) return null;
+    const {
+      session: { backend, ...session },
+      lastUsed,
+      cleanupPending,
+    } = legacy.data;
+    if (backend === "desktop") {
+      await bb.storage.kv.delete(key);
+      return null;
+    }
+    const record: RecordEntry = { session, lastUsed, cleanupPending };
+    await bb.storage.kv.set(key, record);
+    return record;
+  }
   const unfinished: RecordEntry[] = [];
   for (const key of await bb.storage.kv.list("sessions/")) {
-    const parsed = recordSchema.safeParse(await bb.storage.kv.get(key));
-    if (!parsed.success) continue;
-    if (parsed.data.session.state === "closed" && !parsed.data.cleanupPending)
-      continue;
-    unfinished.push(parsed.data);
+    const record = await readStored(key);
+    if (!record) continue;
+    if (record.session.state === "closed" && !record.cleanupPending) continue;
+    unfinished.push(record);
   }
   bb.background.service("restart-cleanup", {
     async start() {
       for (const record of unfinished.splice(0))
         await finish(record, "closed").catch(() =>
           bb.log.warn(
-            "Browser Automation restart cleanup will need the owning desktop to reconnect",
+            "Browser Automation restart cleanup will need the browser host to reconnect",
           ),
         );
     },
@@ -237,6 +191,7 @@ export default async function browserAutomationPlugin(bb: BbPluginApi) {
     signal = AbortSignal.any([signal, threadLifecycle.signal]);
     signal.throwIfAborted();
     await bb.sdk.threads.get({ threadId: input.threadId });
+    const hostId = input.hostId ?? (await threadHost(input.threadId, signal));
     if (active.size >= 64)
       throw new Error(
         "Browser session limit reached; close an existing session",
@@ -245,90 +200,21 @@ export default async function browserAutomationPlugin(bb: BbPluginApi) {
     const session: Session = {
       id: randomUUID(),
       threadId: input.threadId,
-      hostId: input.selection.hostId,
-      backend: input.selection.backend,
-      profile:
-        input.selection.backend === "local"
-          ? (input.selection.profile ?? null)
-          : null,
+      hostId,
+      profile: input.profile,
       state: "ready",
       createdAt: now,
       expiresAt: now + idleTimeoutMs,
     };
     const record: RecordEntry = {
       session,
-      desktop: null,
       lastUsed: now,
       cleanupPending: false,
     };
     const retirement = new AbortController();
     opening.set(session.id, retirement);
     signal = AbortSignal.any([signal, retirement.signal]);
-    let connectionUrl: string | undefined;
-    let created: {
-      hostId: string;
-      instanceId: string;
-      generation: string;
-      threadId: string;
-      tabId: string;
-    } | null = null;
     try {
-      if (input.selection.backend === "desktop") {
-        const selection = input.selection;
-        const { instances } = await desktop.listInstances({
-          hostId: selection.hostId,
-        });
-        const instance = instances.find(
-          (candidate) => candidate.instanceId === selection.instanceId,
-        );
-        if (!instance)
-          throw new Error(
-            "Selected desktop is unavailable; choose a connected instance explicitly",
-          );
-        const scope = {
-          hostId: selection.hostId,
-          instanceId: instance.instanceId,
-          generation: instance.generation,
-          threadId: input.threadId,
-        };
-        let tabId = selection.tabId;
-        if (!tabId) {
-          const result = await desktop.createTab({
-            ...scope,
-            url: "about:blank",
-            presentation: "hidden",
-          });
-          tabId = result.tab.tabId;
-          created = { ...scope, tabId };
-        }
-        const lease = await desktop.acquireControl({
-          ...scope,
-          tabIds: [tabId],
-          controllerLabel: "Browser Automation",
-          ttlMs: idleTimeoutMs,
-        });
-        record.desktop = {
-          ...scope,
-          leaseId: lease.leaseId,
-          tabId,
-          owned: selection.tabId === undefined,
-          leasedTabIds: [],
-        };
-        const connection = await desktop.openConnection({
-          ...scope,
-          leaseId: lease.leaseId,
-        });
-        if (connection.hostId !== scope.hostId)
-          throw new Error(
-            "Desktop connection returned a different execution host",
-          );
-        connectionUrl = connection.wsEndpoint;
-        session.expiresAt = Math.min(
-          session.expiresAt,
-          lease.expiresAt,
-          connection.expiresAt,
-        );
-      }
       await save(record);
       active.set(session.id, record);
       while (true) {
@@ -346,7 +232,6 @@ export default async function browserAutomationPlugin(bb: BbPluginApi) {
         "open",
         {
           sessionId: session.id,
-          ...(connectionUrl === undefined ? {} : { connectionUrl }),
           ...(session.profile === null ? {} : { profile: session.profile }),
           expiresAt: hardDeadline(session),
           idleTimeoutMs,
@@ -354,36 +239,9 @@ export default async function browserAutomationPlugin(bb: BbPluginApi) {
         { hostId: session.hostId, signal },
       );
       signal.throwIfAborted();
-      if (record.desktop) {
-        const target = record.desktop;
-        subscriptions.set(
-          session.id,
-          desktop.subscribe({
-            hostId: target.hostId,
-            instanceId: target.instanceId,
-            generation: target.generation,
-            threadId: target.threadId,
-            onChange(result) {
-              if (trackLeasedTabs(target, result.tabs))
-                void save(record).catch(() => {});
-              if (
-                !result.tabs.some(
-                  (tab) => tab.control?.leaseId === target.leaseId,
-                )
-              )
-                void finish(record, "stopped").catch(() => {});
-            },
-            onError() {
-              void finish(record, "stopped").catch(() => {});
-            },
-          }),
-        );
-      }
       return session;
     } catch (error) {
       await finish(record, "closed").catch(() => {});
-      if (created && !record.desktop)
-        await desktop.closeTab(created).catch(() => {});
       throw error;
     } finally {
       opening.delete(session.id);
@@ -445,9 +303,7 @@ export default async function browserAutomationPlugin(bb: BbPluginApi) {
     }
   }
   const viewable = (session: Session) =>
-    session.backend === "local" &&
-    session.state === "ready" &&
-    Date.now() < session.expiresAt;
+    session.state === "ready" && Date.now() < session.expiresAt;
   async function preview(
     input: z.output<typeof rpcContract.preview.input>,
     signal: AbortSignal,
@@ -474,9 +330,7 @@ export default async function browserAutomationPlugin(bb: BbPluginApi) {
   ): Promise<null> {
     const record = await owned(request.threadId, request.sessionId);
     if (!viewable(record.session))
-      throw new Error(
-        "Session is not a ready local browser; open a new session",
-      );
+      throw new Error("Browser session is not ready; open a new session");
     await touch(record);
     return host.call(
       "input",
@@ -493,7 +347,7 @@ export default async function browserAutomationPlugin(bb: BbPluginApi) {
         : (await bb.sdk.environments.get({ environmentId, signal })).hostId;
     if (!hostId)
       throw new Error(
-        "This thread has no environment host; open a browser with the CLI",
+        "This thread has no environment host; choose one with `bb browser-automation open --machine <name-or-id>`",
       );
     return hostId;
   }
@@ -510,18 +364,9 @@ export default async function browserAutomationPlugin(bb: BbPluginApi) {
       )
       .sort((a, b) => b.createdAt - a.createdAt)[0];
     if (reusable) return Promise.resolve(reusable);
-    const work = (async () =>
-      open(
-        {
-          threadId,
-          selection: {
-            backend: "local",
-            hostId: await threadHost(threadId, signal),
-            profile: DEFAULT_PROFILE,
-          },
-        },
-        signal,
-      ))().finally(() => openingForThread.delete(threadId));
+    const work = open({ threadId, profile: DEFAULT_PROFILE }, signal).finally(
+      () => openingForThread.delete(threadId),
+    );
     openingForThread.set(threadId, work);
     return work;
   }
@@ -603,7 +448,7 @@ export default async function browserAutomationPlugin(bb: BbPluginApi) {
     tools: [],
     skills: ["browser-automation"],
     instructions:
-      "Before opening a browser, run `bb browser-automation list`; if this thread already has a ready local session, possibly opened by the user from the side panel, reuse it. Open local sessions with `--profile default` to share the browser the user signs in to from the side panel. When `bb browser-automation open` returns a previewDirective, copy it into your next response exactly once as a standalone line before you continue working. Do not wrap it in backticks or a code fence, and do not invent or edit the session ID. The directive shows the user a live view of that headless browser in BB chat. Desktop sessions return no directive.",
+      "Use `bb browser-automation` for all web browsing. It drives the remote browser on this thread's host: the same browser, with the same signed-in profile, that the user sees and controls in the side panel's Remote browser tab. Run `bb browser-automation list --json` first and reuse a ready session, which the user may have opened from the side panel; otherwise run `bb browser-automation open --json`. Pass `--temporary` only when a task needs a clean, signed-out browser. Copy the previewDirective that `open` returns into your next response exactly once as a standalone line, not in backticks or a code fence, and never invent or edit the session ID; it shows the user a live view. Never drive the user's desktop in-app browser with `bb browser` commands; those are for the user's own use.",
   }));
   async function executeCli(
     request: BrowserCliRequest,
@@ -611,8 +456,8 @@ export default async function browserAutomationPlugin(bb: BbPluginApi) {
   ) {
     try {
       const input = { ...request.input };
-      if (request.method === "open" && input.selection) {
-        const target = input.selection.hostId.trim();
+      if (request.method === "open" && input.hostId !== undefined) {
+        const target = input.hostId.trim();
         const hosts = await bb.sdk.hosts.list({ signal: context.signal });
         const idMatch = hosts.find((candidate) => candidate.id === target);
         const matches = idMatch
@@ -624,7 +469,7 @@ export default async function browserAutomationPlugin(bb: BbPluginApi) {
           throw new Error(
             `Machine name '${target}' is ambiguous; use an exact host ID`,
           );
-        input.selection = { ...input.selection, hostId: matches[0].id };
+        input.hostId = matches[0].id;
       }
       if (request.scriptFile) {
         if (!request.scriptHost)
@@ -661,12 +506,7 @@ export default async function browserAutomationPlugin(bb: BbPluginApi) {
           ? rpcContract.open.output.safeParse(result)
           : null;
       const printable = opened?.success
-        ? {
-            ...opened.data,
-            ...(opened.data.backend === "local"
-              ? { previewDirective: previewDirective(opened.data.id) }
-              : {}),
-          }
+        ? { ...opened.data, previewDirective: previewDirective(opened.data.id) }
         : output.success
           ? {
               ...output.data,

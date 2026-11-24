@@ -11,6 +11,11 @@ const runtime: ResolvedRuntime = {
   source: "release",
 };
 const resolver = async () => runtime;
+const idlePreview: RuntimeSession["preview"] = {
+  next: async () => null,
+  input: async () => {},
+  close() {},
+};
 
 const open = (sessionId: string) => ({
   sessionId,
@@ -31,7 +36,7 @@ describe("host runtime preparation", () => {
     );
     const factory = vi.fn(async (): Promise<RuntimeSession> => ({
       close: async () => {},
-      preview: null,
+      preview: idlePreview,
       run: async () => {
         throw new Error("unused");
       },
@@ -144,7 +149,7 @@ describe("host session lifetime", () => {
       createHostEntry(
         async () => ({
           close,
-          preview: null,
+          preview: idlePreview,
           run: async () => {
             await vi.advanceTimersByTimeAsync(2 * 60_000);
             return output;
@@ -236,7 +241,7 @@ describe("host session lifetime", () => {
       createHostEntry(
         async () => ({
           close,
-          preview: null,
+          preview: idlePreview,
           run: async (_script, _timeout, signal) =>
             new Promise((_resolve, reject) => {
               started();
@@ -303,7 +308,7 @@ describe("host session lifetime", () => {
       createHostEntry(
         async () => ({
           close,
-          preview: null,
+          preview: idlePreview,
           run: async (_script, _timeout, signal) =>
             new Promise((_resolve, reject) => {
               signal.addEventListener(
@@ -348,7 +353,7 @@ describe("host session lifetime", () => {
       .mockResolvedValueOnce(undefined);
     const harness = experimental_createHostEntryHarness(
       createHostEntry(
-        async () => ({ close, preview: null, run: vi.fn() }),
+        async () => ({ close, preview: idlePreview, run: vi.fn() }),
         resolver,
       ),
     );
@@ -390,7 +395,7 @@ describe("host session lifetime", () => {
       expect(factory.mock.calls[0]![0].signal.aborted).toBe(true),
     );
     const close = vi.fn(async () => {});
-    finishStartup({ close, preview: null, run: vi.fn() });
+    finishStartup({ close, preview: idlePreview, run: vi.fn() });
     await closing;
     await rejected;
     expect(close).toHaveBeenCalledOnce();
@@ -520,33 +525,25 @@ describe("host live preview", () => {
     expect(input).toHaveBeenLastCalledWith(actions, expect.any(AbortSignal));
     await harness.experimental_dispose();
   });
-  it("passes a profile to the runtime and refuses a profile with a desktop connection", async () => {
+  it("passes the profile to the runtime", async () => {
     const factory = vi.fn(async (): Promise<RuntimeSession> => ({
       close: async () => {},
-      preview: null,
+      preview: idlePreview,
       run: async () => ({ text: "", images: [], exitCode: 0 }),
     }));
     const harness = experimental_createHostEntryHarness(
       createHostEntry(factory, resolver),
     );
-    await expect(
-      harness.experimental_call("open", {
-        ...open(randomUUID()),
-        connectionUrl: "ws://127.0.0.1:9/devtools/browser/x",
-        profile: "default",
-      }),
-    ).rejects.toThrow("cannot use a host profile");
     await harness.experimental_call("open", {
       ...open(randomUUID()),
       profile: "work",
     });
-    expect(factory).toHaveBeenCalledOnce();
     expect(factory).toHaveBeenCalledWith(
-      expect.objectContaining({ profile: "work", connectionUrl: undefined }),
+      expect.objectContaining({ profile: "work" }),
     );
     await harness.experimental_dispose();
   });
-  it("refuses sessions attached to a desktop browser and cancels waits on close", async () => {
+  it("cancels preview waits on close", async () => {
     const waiting = vi.fn(
       (_after: number, _wait: number, signal: AbortSignal) =>
         new Promise<null>((_resolve, reject) => {
@@ -555,37 +552,16 @@ describe("host live preview", () => {
           });
         }),
     );
-    const factory = vi
-      .fn()
-      .mockResolvedValueOnce({ close: async () => {}, preview: null })
-      .mockResolvedValueOnce({
-        close: async () => {},
-        preview: { next: waiting, input: vi.fn(), close() {} },
-      });
+    const factory = vi.fn(async (): Promise<RuntimeSession> => ({
+      close: async () => {},
+      preview: { next: waiting, input: vi.fn(), close() {} },
+      run: vi.fn(),
+    }));
     const harness = experimental_createHostEntryHarness(
       createHostEntry(factory, resolver),
     );
-    const desktop = randomUUID(),
-      local = randomUUID();
-    await harness.experimental_call("open", {
-      ...open(desktop),
-      connectionUrl: "ws://127.0.0.1:9/devtools/browser/x",
-    });
+    const local = randomUUID();
     await harness.experimental_call("open", open(local));
-    await expect(
-      harness.experimental_call("preview", {
-        sessionId: desktop,
-        afterSequence: 0,
-        waitMs: 0,
-        size: "thumbnail",
-      }),
-    ).rejects.toThrow("local headless");
-    await expect(
-      harness.experimental_call("input", {
-        sessionId: desktop,
-        actions: [{ type: "reload" }],
-      }),
-    ).rejects.toThrow("local headless");
     const pending = harness.experimental_call("preview", {
       sessionId: local,
       afterSequence: 0,
