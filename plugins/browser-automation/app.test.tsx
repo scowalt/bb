@@ -1,13 +1,25 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { experimental_makeActionContext } from "@get-bb/plugin-sdk/testing";
+import type { ExperimentalTabRegistration } from "@get-bb/plugin-sdk/app";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
-import type { PreviewFrame, Session } from "./contracts.js";
+import type { PreviewFrame, Session, ViewerAction } from "./contracts.js";
 import { closeLightbox } from "./lightbox-store.js";
 
 const app = await loadPluginApp(() => import("./app"));
 const directive = app.messageDirectives[0]!;
 const overlay = app.appOverlays[0]!;
+const tab = app.tabs.find(
+  (
+    registration,
+  ): registration is Extract<
+    ExperimentalTabRegistration,
+    { context: { kind: "thread" }; availability: "action" }
+  > =>
+    registration.context.kind === "thread" &&
+    registration.availability === "action",
+)!;
 
 afterEach(() => {
   cleanup();
@@ -384,5 +396,145 @@ describe("expanded browser preview", () => {
       "Last view of Cart",
     );
     expect(previewInputs(lightbox)).toHaveLength(1);
+  });
+});
+
+describe("remote browser side panel", () => {
+  const tabProps = { threadId: "thr_1", environment: null, params: null };
+  const inputBatches = (slot: {
+    rpcCalls: { method: string; input: unknown }[];
+  }) =>
+    slot.rpcCalls
+      .filter((call) => call.method === "input")
+      .map((call) => {
+        const input = call.input as {
+          sessionId: string;
+          actions: ViewerAction[];
+        };
+        expect(input.sessionId).toBe(session.id);
+        return input.actions;
+      });
+  const renderViewer = async (input: () => unknown) => {
+    let polls = 0;
+    const slot = renderSlot(tab, tabProps, {
+      rpc: {
+        list: () => [session],
+        preview: () => {
+          polls += 1;
+          return polls === 1 ? { session, frame: frame(1) } : hang();
+        },
+        input,
+      },
+    });
+    const image = await slot.findByAltText("Live view of Cart");
+    vi.spyOn(image, "getBoundingClientRect").mockReturnValue(
+      DOMRect.fromRect({ x: 10, y: 20, width: 640, height: 400 }),
+    );
+    const surface = slot.getByRole("application");
+    return { slot, surface };
+  };
+  const pointer = (clientX: number, clientY: number) => ({
+    clientX,
+    clientY,
+    button: 0,
+    pointerId: 1,
+  });
+
+  it("starts a browser for the thread from the empty state", async () => {
+    let finishStart!: (session: Session) => void;
+    const slot = renderSlot(tab, tabProps, {
+      rpc: {
+        list: () => [],
+        openForThread: () =>
+          new Promise<Session>((resolve) => {
+            finishStart = resolve;
+          }),
+        preview: hang,
+      },
+    });
+    fireEvent.click(await slot.findByRole("button", { name: "Start browser" }));
+    expect(await slot.findByText("Starting browser…")).toBeTruthy();
+    expect(
+      slot.rpcCalls.filter((call) => call.method === "openForThread"),
+    ).toEqual([{ method: "openForThread", input: { threadId: "thr_1" } }]);
+    act(() => finishStart(session));
+    expect(
+      await slot.findByRole("toolbar", { name: "Browser controls" }),
+    ).toBeTruthy();
+  });
+
+  it("starts the browser when launched from the panel menu", async () => {
+    const context = experimental_makeActionContext({
+      panel: { ...experimental_makeActionContext().panel, openTab: () => true },
+    });
+    await tab.run?.({ ...context, ...tabProps });
+    const slot = renderSlot(tab, tabProps, {
+      rpc: { list: () => [], openForThread: () => session, preview: hang },
+    });
+    await waitFor(() =>
+      expect(slot.rpcCalls.map((call) => call.method)).toContain(
+        "openForThread",
+      ),
+    );
+  });
+
+  it("clicks the remote page at the point under the pointer, ignoring letterboxing", async () => {
+    const { slot, surface } = await renderViewer(() => ({ ok: true }));
+    fireEvent.pointerDown(surface, pointer(110, 110));
+    fireEvent.pointerUp(surface, pointer(110, 110));
+    await waitFor(() => expect(inputBatches(slot).flat()).toHaveLength(2));
+    expect(inputBatches(slot).flat()).toEqual([
+      expect.objectContaining({ event: "down", x: 200, y: 100, clickCount: 1 }),
+      expect.objectContaining({ event: "up", x: 200, y: 100, clickCount: 1 }),
+    ]);
+    fireEvent.pointerDown(surface, pointer(15, 30));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(inputBatches(slot).flat()).toHaveLength(2);
+  });
+
+  it("keeps one input request in flight and coalesces moves behind it", async () => {
+    const replies: (() => void)[] = [];
+    const { slot, surface } = await renderViewer(
+      () =>
+        new Promise((resolve) => {
+          replies.push(() => resolve({ ok: true }));
+        }),
+    );
+    fireEvent.pointerDown(surface, pointer(110, 110));
+    await waitFor(() => expect(inputBatches(slot)).toHaveLength(1));
+    for (const x of [120, 130, 140])
+      fireEvent.pointerMove(surface, pointer(x, 110));
+    fireEvent.pointerUp(surface, pointer(140, 110));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(inputBatches(slot)).toHaveLength(1);
+    act(() => replies[0]!());
+    await waitFor(() => expect(inputBatches(slot)).toHaveLength(2));
+    expect(inputBatches(slot)[1]).toEqual([
+      expect.objectContaining({ event: "move", x: 260, button: "left" }),
+      expect.objectContaining({ event: "up", x: 260 }),
+    ]);
+  });
+
+  it("opens from the chat card's side panel button", async () => {
+    const openTab = vi.fn(() => true);
+    const card = renderSlot(directive, props(), {
+      rpc: { preview: () => ({ session, frame: frame(1) }) },
+      experimental_panel: { openTab },
+    });
+    fireEvent.click(
+      await card.findByRole("button", { name: "Open in side panel" }),
+    );
+    expect(card.experimental_panelCalls).toEqual([
+      {
+        method: "openTab",
+        options: {
+          tab: {
+            id: "remote-browser",
+            context: { kind: "thread" },
+            availability: "action",
+          },
+        },
+      },
+    ]);
   });
 });
