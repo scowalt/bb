@@ -1,10 +1,4 @@
-import {
-  useEffect,
-  useId,
-  useState,
-  useSyncExternalStore,
-  type ReactNode,
-} from "react";
+import { useEffect, useId, useState, type ReactNode } from "react";
 import {
   activityIconClass,
   activityMetaClass,
@@ -24,54 +18,39 @@ import { cn } from "@/lib/utils";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   definePluginApp,
-  useRpc,
+  experimental_useAppPanel,
   type PluginMessageDirectiveProps,
 } from "@get-bb/plugin-sdk/app";
-import type { PreviewFrame, PreviewSize, rpcContract } from "./contracts.js";
+import type { PreviewFrame } from "./contracts.js";
 import {
   closeLightbox,
   openLightbox,
   useLightboxTarget,
   type LightboxTarget,
 } from "./lightbox-store.js";
+import {
+  STATUS_LABEL,
+  pageLocation,
+  pageTitle,
+  useDocumentVisible,
+  useLivePreview,
+  type PreviewStatus,
+} from "./live-preview.js";
 import { PREVIEW_DIRECTIVE_ID } from "./preview-directive.js";
-import { experimental_sliceUtf16Head as sliceUtf16Head } from "@get-bb/plugin-sdk/app";
+import {
+  REMOTE_BROWSER_TAB,
+  RemoteBrowserTab,
+  cancelBrowserStart,
+  requestBrowserStart,
+} from "./remote-browser-tab.js";
+import { InteractiveViewer } from "./viewer.js";
 
-const MIN_POLL_INTERVAL_MS = 400;
-const MAX_RETRY_INTERVAL_MS = 15_000;
-const MAX_CONSECUTIVE_FAILURES = 5;
 const SESSION_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const HEADER_BUTTON_CLASS =
   "flex min-h-8 min-w-0 flex-1 cursor-pointer items-center gap-1.5 rounded-none bg-transparent px-3 py-1.5 text-xs text-foreground transition-colors hover:bg-background/80";
 const EXPAND_BUTTON_CLASS =
   "flex min-h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-none border-l border-border/35 bg-transparent text-muted-foreground transition-colors hover:text-foreground";
-
-type PreviewStatus = "connecting" | "live" | "ended" | "unavailable";
-
-const STATUS_LABEL: Record<PreviewStatus, string> = {
-  connecting: "Connecting",
-  live: "Live",
-  ended: "Ended",
-  unavailable: "Unavailable",
-};
-
-function subscribeDocumentVisibility(onChange: () => void): () => void {
-  document.addEventListener("visibilitychange", onChange);
-  return () => document.removeEventListener("visibilitychange", onChange);
-}
-
-function readDocumentVisible(): boolean {
-  return document.visibilityState !== "hidden";
-}
-
-function useDocumentVisible(): boolean {
-  return useSyncExternalStore(
-    subscribeDocumentVisibility,
-    readDocumentVisible,
-    () => true,
-  );
-}
 
 function useInViewport(): [(element: Element | null) => void, boolean] {
   const [element, setElement] = useState<Element | null>(null);
@@ -89,105 +68,16 @@ function useInViewport(): [(element: Element | null) => void, boolean] {
   return [setElement, inViewport];
 }
 
-function pageLocation(url: string): string {
-  try {
-    const parsed = new URL(url);
-    if (parsed.protocol === "http:" || parsed.protocol === "https:")
-      return `${parsed.host}${parsed.pathname === "/" ? "" : parsed.pathname}`;
-    if (parsed.protocol === "about:") return url;
-    if (parsed.protocol === "file:") return decodeURIComponent(parsed.pathname);
-    return parsed.protocol;
-  } catch {
-    return sliceUtf16Head(url, 80);
-  }
-}
-
-function pageTitle(frame: PreviewFrame | null): string {
-  const title = frame?.title.trim() ?? "";
-  return title === "" || title === frame?.url ? "Headless browser" : title;
-}
-
-function useLivePreview(args: {
-  threadId: string;
-  sessionId: string;
-  enabled: boolean;
-  size: PreviewSize;
-  initialFrame: PreviewFrame | null;
-}): { frame: PreviewFrame | null; status: PreviewStatus } {
-  const { threadId, sessionId, enabled, size, initialFrame } = args;
-  const rpc = useRpc<typeof rpcContract>();
-  const [frame, setFrame] = useState<PreviewFrame | null>(initialFrame);
-  const [status, setStatus] = useState<PreviewStatus>(
-    initialFrame ? "live" : "connecting",
-  );
-  const settled = status === "ended" || status === "unavailable";
-
-  useEffect(() => {
-    if (!enabled || settled) return;
-    let cancelled = false;
-    let timeout: number | null = null;
-    let afterSequence = 0;
-    let failures = 0;
-    const poll = async () => {
-      const startedAt = Date.now();
-      let delayMs: number;
-      try {
-        const result = await rpc.call("preview", {
-          threadId,
-          sessionId,
-          afterSequence,
-          size,
-        });
-        if (cancelled) return;
-        if (
-          result.session.state !== "ready" ||
-          result.session.backend !== "local"
-        ) {
-          setStatus(
-            result.session.backend === "local" ? "ended" : "unavailable",
-          );
-          return;
-        }
-        failures = 0;
-        if (result.frame) {
-          afterSequence = result.frame.sequence;
-          setFrame(result.frame);
-          setStatus("live");
-        }
-        delayMs = Math.max(0, MIN_POLL_INTERVAL_MS - (Date.now() - startedAt));
-      } catch {
-        if (cancelled) return;
-        failures += 1;
-        if (failures >= MAX_CONSECUTIVE_FAILURES) {
-          setStatus("unavailable");
-          return;
-        }
-        delayMs = Math.min(1_000 * 2 ** failures, MAX_RETRY_INTERVAL_MS);
-      }
-      timeout = window.setTimeout(() => void poll(), delayMs);
-    };
-    void poll();
-    return () => {
-      cancelled = true;
-      if (timeout !== null) window.clearTimeout(timeout);
-    };
-  }, [enabled, rpc, sessionId, settled, size, threadId]);
-
-  return { frame, status };
-}
-
 function PreviewImage({
   frame,
   status,
   title,
   className,
-  maxHeight,
 }: {
   frame: PreviewFrame | null;
   status: PreviewStatus;
   title: string;
   className: string;
-  maxHeight?: string;
 }) {
   const aspect = frame ?? { width: 16, height: 9 };
   if (!frame && status !== "connecting") return null;
@@ -197,14 +87,7 @@ function PreviewImage({
         "overflow-hidden rounded-md border border-border/60 bg-background",
         className,
       )}
-      style={{
-        aspectRatio: `${aspect.width} / ${aspect.height}`,
-        ...(maxHeight === undefined
-          ? {}
-          : {
-              width: `min(100%, calc(${maxHeight} * ${aspect.width / aspect.height}))`,
-            }),
-      }}
+      style={{ aspectRatio: `${aspect.width} / ${aspect.height}` }}
     >
       {frame ? (
         <img
@@ -275,6 +158,7 @@ function BrowserPreviewCard({
   source: string;
 }) {
   const visible = useDocumentVisible();
+  const panel = experimental_useAppPanel();
   const [observe, inViewport] = useInViewport();
   const [expanded, setExpanded] = useState(true);
   const enlarged = useLightboxTarget()?.sessionId === sessionId;
@@ -352,6 +236,20 @@ function BrowserPreviewCard({
             aria-hidden
           />
         </button>
+        {status === "live" ? (
+          <button
+            type="button"
+            aria-label="Open in side panel"
+            title="Open in side panel"
+            onClick={() => {
+              if (!panel.openTab({ tab: REMOTE_BROWSER_TAB }))
+                openLightbox({ threadId, sessionId, frame });
+            }}
+            className={EXPAND_BUTTON_CLASS}
+          >
+            <Icon name="PanelRight" className="size-3.5" aria-hidden />
+          </button>
+        ) : null}
         {frame ? (
           <button
             type="button"
@@ -410,12 +308,12 @@ function LightboxBody({
           {[location, STATUS_LABEL[status]].filter(Boolean).join(" · ")}
         </DialogDescription>
       </DialogHeader>
-      <PreviewImage
+      <InteractiveViewer
+        threadId={target.threadId}
+        sessionId={target.sessionId}
         frame={frame}
         status={status}
-        title={title}
-        className="mx-auto"
-        maxHeight="78dvh"
+        placement="dialog"
       />
     </>
   );
@@ -454,5 +352,17 @@ export default definePluginApp((app) => {
   app.slots.experimental_appOverlay({
     id: "browser-preview-lightbox",
     component: BrowserPreviewLightbox,
+  });
+  app.slots.experimental_tab({
+    ...REMOTE_BROWSER_TAB,
+    title: "Remote browser",
+    icon: "Globe",
+    layout: "flush",
+    component: RemoteBrowserTab,
+    run(context) {
+      requestBrowserStart(context.threadId);
+      if (!context.panel.openTab({ tab: REMOTE_BROWSER_TAB }))
+        cancelBrowserStart(context.threadId);
+    },
   });
 });
