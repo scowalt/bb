@@ -19,6 +19,7 @@ const session: Session = {
   threadId: "thr_1",
   hostId: "host",
   backend: "local",
+  profile: "default",
   state: "ready",
   createdAt: 1,
   expiresAt: 4_000_000_000_000,
@@ -35,6 +36,8 @@ const frame = (
   height: 640,
   url,
   title,
+  tabs: [{ id: "tab-1", title, url }],
+  activeTabId: "tab-1",
 });
 const hang = () => new Promise<never>(() => {});
 const props = (sessionId: string = session.id) => ({
