@@ -28,6 +28,12 @@ const detachedSchema = z.object({ sessionId: z.string() });
 const attachedSchema = z.object({ sessionId: z.string() });
 const createdTargetSchema = z.object({ targetId: z.string() });
 const windowSchema = z.object({ windowId: z.number().int() });
+const maxHiddenToolbarHeight = 400;
+const hiddenToolbarSchema = z.object({
+  result: z.object({
+    value: z.number().int().min(0).max(maxHiddenToolbarHeight),
+  }),
+});
 const historySchema = z.object({
   currentIndex: z.number().int(),
   entries: z.array(z.object({ id: z.number().int() })),
@@ -104,6 +110,7 @@ export function createPreview(
   let cast: { targetId: string; sessionId: string; size: PreviewSize } | null =
     null;
   let focused: string | null = null;
+  let viewport: { width: number; height: number } | null = null;
   let pressedButtons = 0;
   let fullSizeUntil = 0;
   let selection: Promise<void> = Promise.resolve();
@@ -152,6 +159,33 @@ export function createPreview(
     if (connection && connection.readyState <= socketOpen) connection.close();
   }
 
+  async function fitWindow(
+    connection: PreviewSocket,
+    targetId: string,
+    sessionId: string,
+  ) {
+    if (viewport === null) return;
+    const { width, height } = viewport;
+    const { windowId } = windowSchema.parse(
+      await send(connection, "Browser.getWindowForTarget", { targetId }),
+    );
+    const toolbar = hiddenToolbarSchema.safeParse(
+      await send(
+        connection,
+        "Runtime.evaluate",
+        { expression: "outerHeight - innerHeight", returnByValue: true },
+        sessionId,
+      ).catch(() => null),
+    );
+    await send(connection, "Browser.setWindowBounds", {
+      windowId,
+      bounds: {
+        width,
+        height: height + (toolbar.success ? toolbar.data.result.value : 0),
+      },
+    });
+  }
+
   function bestTarget(): string | null {
     if (focused !== null && targets.has(focused)) return focused;
     let best: { targetId: string; rank: number; activity: number } | null =
@@ -198,6 +232,7 @@ export function createPreview(
               flatten: true,
             }),
           ).sessionId;
+          await fitWindow(connection, targetId, sessionId).catch(() => {});
         }
         cast = { targetId, sessionId, size };
         await send(
@@ -510,16 +545,9 @@ export function createPreview(
         return;
       }
       case "resize": {
+        viewport = { width: action.width, height: action.height };
         const target = await page(signal);
-        const { windowId } = windowSchema.parse(
-          await send(target.connection, "Browser.getWindowForTarget", {
-            targetId: target.targetId,
-          }),
-        );
-        await send(target.connection, "Browser.setWindowBounds", {
-          windowId,
-          bounds: { width: action.width, height: action.height },
-        });
+        await fitWindow(target.connection, target.targetId, target.sessionId);
         return;
       }
       case "selectTab": {
