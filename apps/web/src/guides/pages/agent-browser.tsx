@@ -23,25 +23,23 @@ Guide: https://getbb.app/guides/agent-browser
 
 Do every step below, with a Check after each step. Stop if a check fails and tell me what failed. Don't commit, push, or deploy unless I ask.
 
-1. Set up browser access. Run bb plugin list. Browser Automation isn't installed by default: install it with bb plugin install browser-automation --yes if it's missing, or enable it with bb plugin enable browser-automation if it's off. Agent Annotations is built in but off: enable it with bb plugin enable agent-annotations. Then read bb guide browser and bb browser-automation --help. Find this thread's machine with bb status --json and bb machine list.
-   Check: both plugins are running and the chosen browser machine is connected.
+1. Set up browser access. Run bb plugin list. Browser Automation isn't installed by default: install it with bb plugin install browser-automation --yes if it's missing, or enable it with bb plugin enable browser-automation if it's off. Agent Annotations is built in but off: enable it with bb plugin enable agent-annotations. Then read bb guide browser and bb browser-automation --help.
+   Check: both plugins are running.
 
 2. Open the app.
    2a. If the App URL needs a dev server, start it with the project's documented command in a bb terminal in this environment, and check that the URL responds.
-   2b. If Needs a sign-in is no, open headless Chrome on that machine:
-   bb browser-automation open --backend local --headless --machine <host-id> --json
-   2c. If Needs a sign-in is yes, use the desktop app's Browser instead: run bb browser instances --host <desktop-host-id> --json, select the intended connected desktop instance, then:
-   bb browser-automation open --backend desktop --machine <desktop-host-id> --desktop <instance-id> --json
-   Ask if the intended desktop instance is ambiguous. Localhost means the browser's machine; use a reachable app URL if it differs from the dev server's machine. Keep the returned session ID. Emit the returned previewDirective once if present. Use bb browser-automation run to get a named page, navigate, and snapshot it; follow bb guide browser for the script format. Each run times out after 30 seconds by default.
-   Check: the page shows the intended app. For a signed-in flow, verify the expected account. If signed out, use bb browser import-sources with the selected host, instance, and generation to discover sources. Ask me which source/profile to use, then run bb browser import-cookies with those exact values. If the source browser needs quitting, an OS prompt needs my input, or login is still needed, stop with that specific next action. Never read or print cookie values. Import is desktop-only and doesn't populate headless sessions.
+   2b. Run bb browser-automation list --json and reuse a ready session if this thread has one. Otherwise run:
+   bb browser-automation open --json
+   This opens the Remote browser on this thread's machine, the same browser I see in the side panel, so localhost means this machine and my logins there carry over. Keep the returned session ID and emit the returned previewDirective once. Use bb browser-automation run to get a named page, navigate, and snapshot it; follow bb guide browser for the script format. Each run times out after 30 seconds by default. Don't use bb browser commands; they drive my desktop tabs.
+   Check: the page shows the intended app. If Needs a sign-in is yes, verify the expected account. If it's signed out, stop and ask me to sign in once in the side panel's Remote browser tab, then continue. Never read or print cookie values.
 
-3. Verify the change. Take a fresh snapshot, click through the requested flow using its element references, and check the visible result. Check the console and the layout at each size in Screen sizes. Use bb browser-automation screenshot <session-id> --page <name> --json and inspect the returned images. Show the screenshots that matter in this thread as images; for another browser host, fetch them with bb file read. Fix failures within the requested change and recheck the affected flow.
+3. Verify the change. Take a fresh snapshot, click through the requested flow using its element references, and check the visible result. Check the console and the layout at each size in Screen sizes. Use bb browser-automation screenshot <session-id> --page <name> --json and inspect the returned images. Show the screenshots that matter in this thread as images. Fix failures within the requested change and recheck the affected flow.
    Check: the flow behaves as requested, the layout works at each size, and any console errors are explained. Report what you actually exercised and show the screenshots; don't call a screenshot alone a passing interaction test.
 
-4. Leave the app ready for feedback. Close the automation session with bb browser-automation close <session-id> and keep the preview server running. In desktop bb, use bb browser create with the selected host, instance, generation, current thread, URL, and --reveal to leave a Browser tab open for annotations. If no desktop instance is connected, explain that element annotations require the desktop app and give me the app URL. Tell me to choose Annotate elements, click the element, write the change, and choose Add to prompt. When I send an annotation, use its element context to make the change and verify it in a new browser session.
-   Check: the automation session is closed, the preview route still responds, and the feedback tab is open when desktop is available. Report the URL, terminal ID, browser machine, screenshots, and anything you couldn't verify.
+4. Leave the app ready for feedback. Close your session with bb browser-automation close <session-id>; my own tabs stay open. Keep the dev server running. Give me an address for the app that my computer can reach. Tell me I can open it in a Browser tab in the bb desktop app, choose Annotate elements, click the element, write the change, and choose Add to prompt. When I send an annotation, use its element context to make the change and verify it in a new browser session.
+   Check: your session is closed and the dev server still responds. Report the URL, terminal ID, screenshots, and anything you couldn't verify.
 
-${skillOffer("check-in-browser", "my App URL, dev server command, sign-in, Screen sizes, and browser machine")}`,
+${skillOffer("check-in-browser", "my App URL, dev server command, sign-in, and Screen sizes")}`,
 );
 
 export const guide: Guide = {
@@ -51,7 +49,7 @@ export const guide: Guide = {
   heroTop: null,
   concept: <BrowserConcept scene="code" />,
   agentPrompt: AGENT_PROMPT,
-  requirement: "the bb desktop app for Browser tabs, logins, and annotations",
+  requirement: "the bb desktop app for annotations",
   steps: [
     PLUGINS_STEP,
     SIGN_INS_STEP,
@@ -66,8 +64,9 @@ export const guide: Guide = {
             prompt="I just added status filters to the Orders page. Start the dev server, open the app in a browser, and try the filters at desktop and phone sizes. Fix anything broken, and show me screenshots."
           />
           <p>
-            Your agent starts the dev server, opens a browser, and clicks
-            through the flow. A live preview in the thread lets you watch.
+            Your agent starts the dev server, opens the Remote browser, and
+            clicks through the flow. A live preview in the thread lets you
+            watch.
           </p>
         </>
       ),
@@ -102,9 +101,9 @@ export const guide: Guide = {
       lead: "Select the element instead of describing where it is.",
       open: (
         <>
-          Open the side panel <Ui icon="side-panel" /> (⌘ J), choose{" "}
-          <Ui icon="plus" />, then <strong>Open browser</strong>, and enter your
-          app's address. Or ask your agent to open it.
+          In the bb desktop app, open the side panel <Ui icon="side-panel" /> (⌘
+          J), choose <Ui icon="plus" />, then <strong>Open browser</strong>, and
+          enter the app address your agent gave you.
         </>
       ),
       target: "the element",
@@ -133,7 +132,8 @@ export const guide: Guide = {
       answer: (
         <p>
           It's easiest. The agent starts the dev server in a terminal in the
-          thread, then opens it in a browser on the same machine.
+          thread, and the Remote browser runs on the same machine, so{" "}
+          <code>localhost</code> works.
         </p>
       ),
     },

@@ -3,7 +3,6 @@ import { BulletList, PromptBlock } from "../guide-blocks";
 import { withIntake } from "../prompt-intake";
 import type { Guide } from "../guide-types";
 import {
-  annotateStep,
   BROWSER_FAQ,
   BROWSER_TROUBLESHOOTING,
   PLUGINS_STEP,
@@ -23,20 +22,18 @@ Guide: https://getbb.app/guides/agent-browser-for-work
 
 Do every step below, with a Check after each step. Stop if a check fails and tell me what failed.
 
-1. Set up browser access. Run bb plugin list. Browser Automation isn't installed by default: install it with bb plugin install browser-automation --yes if it's missing, or enable it with bb plugin enable browser-automation if it's off. Agent Annotations is built in but off: enable it with bb plugin enable agent-annotations. Then read bb guide browser and bb browser-automation --help.
-   Check: both plugins are running.
+1. Set up browser access. Run bb plugin list. Browser Automation isn't installed by default: install it with bb plugin install browser-automation --yes if it's missing, or enable it with bb plugin enable browser-automation if it's off. Then read bb guide browser and bb browser-automation --help.
+   Check: the plugin is running.
 
-2. Open a browser. Find the computer running the bb desktop app with bb machine list, then run bb browser instances --host <desktop-host-id> --json. If a desktop instance is connected, open a Browser tab there so I can watch and my sign-ins work:
-   bb browser-automation open --backend desktop --machine <desktop-host-id> --desktop <instance-id> --json
-   If no desktop instance is connected and Logins lists any site, stop and tell me signed-in sites need the bb desktop app open. Otherwise open headless Chrome on this thread's machine:
-   bb browser-automation open --backend local --headless --machine <host-id> --json
-   Keep the returned session ID. Emit the returned previewDirective once if present.
-   Check: the first page loads. For a signed-in site, confirm the expected account is signed in. If it isn't, stop and ask me to sign in once in a Browser tab, or to import my sign-ins in Settings → Browser. Never read or print cookie values.
+2. Open the browser. Run bb browser-automation list --json and reuse a ready session if this thread has one. Otherwise run:
+   bb browser-automation open --json
+   This opens the Remote browser on this thread's machine. It's the same browser I see in the side panel, so I can watch and my logins there carry over. Keep the returned session ID and emit the returned previewDirective once. Don't use bb browser commands; they drive my desktop tabs.
+   Check: the first page loads. For a site in Logins, confirm the expected account is signed in. If it isn't, stop and ask me to sign in once in the side panel's Remote browser tab, then continue. Never read or print cookie values.
 
 3. Do the task. Take a fresh snapshot before each action and use its element references. Read pages instead of guessing, and keep a list of the sources you used. If a page doesn't state a number, say so instead of filling it in from memory. Don't buy anything, send messages, submit forms that commit me to something, or change account settings unless I asked for exactly that; stop and ask first.
    Check: you have the information or result I asked for, with the page each fact came from.
 
-4. Report and leave the tab for feedback. If you used a desktop Browser tab, stop controlling it with bb browser-automation stop <session-id> so it stays open on the most relevant page, and tell me I can choose Annotate elements to point at anything to change or dig into. If you used headless Chrome, close it with bb browser-automation close <session-id> and give me the page URLs instead.
+4. Report. Close your session with bb browser-automation close <session-id>; my own tabs stay open.
    Check: reply with the result in the format from my Bring back answer (by default, a table with a source per row), a source link for each fact, screenshots of anything I should look at, and what you couldn't do.
 
 If it's a task I'll want again, offer to save these steps as a bb skill in .bb/skills/<short-name>/SKILL.md with my answers filled in, or as a bb automation if it should run on a schedule.`,
@@ -49,12 +46,28 @@ export const guide: Guide = {
   heroTop: null,
   concept: <BrowserConcept scene="work" />,
   agentPrompt: AGENT_PROMPT,
-  requirement: "the bb desktop app for sites you're logged in to",
+  requirement: null,
   steps: [
-    PLUGINS_STEP,
+    {
+      ...PLUGINS_STEP,
+      lead: (
+        <>
+          The <a href="/marketplace/browser-automation">Browser Automation</a>{" "}
+          plugin gives your agent a browser.
+        </>
+      ),
+      body: (
+        <p>
+          Choose <strong>Plugins</strong> in the sidebar, search for “browser”,
+          open <strong>Browser Automation</strong>, and choose{" "}
+          <strong>Install</strong>. It's made by bb but isn't installed until
+          you add it.
+        </p>
+      ),
+    },
     {
       ...SIGN_INS_STEP,
-      lead: "For dashboards and tools behind a login, start bb's Browser signed in.",
+      lead: "For dashboards and tools behind a login, sign in once yourself. Your agent uses the same browser.",
     },
     {
       id: "ask",
@@ -68,7 +81,7 @@ export const guide: Guide = {
           </p>
           <PromptBlock
             name="Example"
-            prompt="Compare the cheapest paid plans of Linear, Trello, and Asana from their pricing pages: the plan name and its price per user per month, billed yearly. Work in a Browser tab here so I can watch. Put the result in a table and link each price to the page it came from."
+            prompt="Compare the cheapest paid plans of Taskly, Linear, and Trello from their pricing pages: the plan name and its price per user per month, billed yearly. Put the result in a table and link each price to the page it came from."
           />
           <p>Jobs that work well:</p>
           <BulletList>
@@ -90,51 +103,21 @@ export const guide: Guide = {
               have the report ready each morning.
             </li>
           </BulletList>
+          <p>
+            Watch your agent work in the side panel's Remote browser tab. Click
+            and type there yourself when it needs you, like for a two-factor
+            code.
+          </p>
         </>
       ),
       shot: {
-        src: "/guides/agent-browser-for-work/window-ask.webp",
-        alt: "A bb thread with a table of the cheapest paid plans of Linear, Trello, and Asana, each price linked to its pricing page, next to Asana's pricing page in a Browser tab",
+        src: "/guides/agent-browser-for-work/window-ask-remote.webp",
+        alt: "A bb thread with a table comparing the cheapest paid plans of Taskly, Linear, and Trello, next to Taskly's pricing page in the side panel's Remote browser tab",
         width: 2048,
         height: 1280,
       },
-      options: [
-        {
-          title: "Watch it work, or step in",
-          body: (
-            <p>
-              While your agent uses the tab, a bar shows it's in control. Choose{" "}
-              <strong>Take over</strong> to click or type yourself, like for a
-              two-factor code, or <strong>Stop</strong> to end its control.
-            </p>
-          ),
-          shot: {
-            src: "/guides/agent-browser-for-work/window-take-over.webp",
-            alt: "The agent reading Trello's pricing page in a bb Browser tab, under a bar that says Browser Automation is controlling this tab, with Stop and Take over",
-            width: 2048,
-            height: 1280,
-          },
-        },
-      ],
+      options: [],
     },
-    annotateStep({
-      title: "Point at what to dig into",
-      lead: "Select the thing on the page instead of describing it.",
-      open: (
-        <>
-          In the Browser tab, choose <strong>Take over</strong> if your agent
-          still has it.
-        </>
-      ),
-      target: "the text, number, or button",
-      note: "your question or request",
-      shot: {
-        src: "/guides/agent-browser-for-work/window-annotate.webp",
-        alt: "Asana's pricing page in a bb Browser tab with the Starter price selected, and the note: Add each plan's monthly price as a second column.",
-        width: 2048,
-        height: 1280,
-      },
-    }),
   ],
   troubleshooting: BROWSER_TROUBLESHOOTING,
   faq: [

@@ -901,20 +901,6 @@
   }
 }
 
-.gd-browser-pin {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  background: var(--ink);
-  color: var(--bg);
-  font-size: 12px;
-  font-weight: 600;
-}
-
 .gd-btab {
   max-width: 600px;
   margin: 48px auto 0;
@@ -975,41 +961,12 @@
   color: var(--ink);
 }
 
-.gd-btab-annotate {
-  display: grid;
-  place-items: center;
-  width: 26px;
-  height: 26px;
-  border-radius: 7px;
-  background: var(--surface-recessed);
-}
-
-.gd-btab-annotate .gd-btab-ic {
-  color: var(--ink-strong);
-}
-
-.gd-btab-control {
-  display: flex;
+.gd-btab-live {
+  display: inline-flex;
   align-items: center;
-  gap: 12px;
-  padding: 7px 12px;
-  border-bottom: 1px solid var(--border);
-  background: var(--surface-recessed);
+  gap: 6px;
   font-size: 12px;
-  color: var(--ink);
-}
-
-.gd-btab-control > span:first-child {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.gd-btab-action {
-  color: var(--ink-strong);
-  white-space: nowrap;
+  color: var(--subtle);
 }
 
 .gd-btab-page {
@@ -1039,13 +996,6 @@
   font-size: 13px;
   color: var(--ink-strong);
   white-space: nowrap;
-}
-
-.gd-btab-pin {
-  position: absolute;
-  top: -12px;
-  right: -12px;
-  background: var(--accent);
 }
 
 .gd-btab-row {
@@ -1092,22 +1042,6 @@
   border: 1px solid var(--border);
   border-radius: 7px;
   color: var(--ink-strong);
-}
-
-.gd-btab-note-actions {
-  display: flex;
-  justify-content: flex-end;
-  align-items: center;
-  gap: 12px;
-  margin-top: 10px;
-  font-size: 12px;
-}
-
-.gd-btab-save {
-  padding: 4px 10px;
-  border-radius: 6px;
-  background: var(--ink-strong);
-  color: var(--bg);
 }
 
 @media (max-width: 600px) {

@@ -4,7 +4,6 @@ import ArrowTurnForwardIcon from "@hugeicons/core-free-icons/ArrowTurnForwardIco
 import Calendar03Icon from "@hugeicons/core-free-icons/Calendar03Icon";
 import CheckmarkCircle02Icon from "@hugeicons/core-free-icons/CheckmarkCircle02Icon";
 import ComputerTerminal01Icon from "@hugeicons/core-free-icons/ComputerTerminal01Icon";
-import Cursor01Icon from "@hugeicons/core-free-icons/Cursor01Icon";
 import Folder01Icon from "@hugeicons/core-free-icons/Folder01Icon";
 import GitBranchIcon from "@hugeicons/core-free-icons/GitBranchIcon";
 import LockIcon from "@hugeicons/core-free-icons/LockIcon";
@@ -245,7 +244,7 @@ const BROWSER_SCENES = {
   code: {
     url: "localhost:3000/issues",
     label:
-      "bb's Browser tab with Claude Code controlling a local app. The issue filter is pinned with the comment: Keep the filter visible on mobile.",
+      "bb's Remote browser tab, which Claude Code is using to check a local app. It clicked the Open filter and reports: The filter stays visible at phone width.",
     title: "Issues",
     rows: [
       "Fix the mobile menu",
@@ -253,18 +252,18 @@ const BROWSER_SCENES = {
       "Keep filters after reload",
     ],
     target: "Open · 12",
-    tag: "button",
-    comment: "Keep the filter visible on mobile.",
+    action: "click",
+    comment: "The filter stays visible at phone width.",
   },
   work: {
     url: "billing.vendor.com/invoices",
     label:
-      "bb's Browser tab with Claude Code controlling a signed-in billing site. The quarter's invoice total is pinned with the comment: Add this to the quarterly spend sheet.",
+      "bb's Remote browser tab, which Claude Code is using on a signed-in billing site. It read the quarter's invoice total and reports: Adding this to the quarterly spend sheet.",
     title: "Invoices",
     rows: ["July · $1,240.00", "August · $1,315.50", "September · $1,402.75"],
     target: "Total · $3,958.25",
-    tag: "td",
-    comment: "Add this to the quarterly spend sheet.",
+    action: "read",
+    comment: "Adding this to the quarterly spend sheet.",
   },
 };
 
@@ -273,7 +272,7 @@ export function BrowserConcept({ scene }: { scene: "code" | "work" }) {
   return (
     <div className="gd-btab" role="img" aria-label={view.label}>
       <div className="gd-btab-tabs" aria-hidden="true">
-        <span className="gd-btab-tab gd-btab-tab-on">Browser</span>
+        <span className="gd-btab-tab gd-btab-tab-on">Remote browser</span>
         <span className="gd-btab-tab">Diff</span>
         <span className="gd-btab-tab">Terminal</span>
       </div>
@@ -282,22 +281,15 @@ export function BrowserConcept({ scene }: { scene: "code" | "work" }) {
         <HugeiconsIcon icon={ArrowRight01Icon} className="gd-btab-ic" />
         <HugeiconsIcon icon={RefreshIcon} className="gd-btab-ic" />
         <span className="gd-btab-url">{view.url}</span>
-        <span className="gd-btab-annotate">
-          <HugeiconsIcon icon={Cursor01Icon} className="gd-btab-ic" />
+        <span className="gd-btab-live">
+          <span className="gd-live" />
+          Live
         </span>
-      </div>
-      <div className="gd-btab-control" aria-hidden="true">
-        <span>Browser Automation is controlling this tab</span>
-        <span className="gd-btab-action">Stop</span>
-        <span className="gd-btab-action">Take over</span>
       </div>
       <div className="gd-btab-page" aria-hidden="true">
         <div className="gd-btab-page-head">
           <strong>{view.title}</strong>
-          <span className="gd-btab-target">
-            {view.target}
-            <span className="gd-browser-pin gd-btab-pin">1</span>
-          </span>
+          <span className="gd-btab-target">{view.target}</span>
         </div>
         {view.rows.map((row) => (
           <div key={row} className="gd-btab-row">
@@ -306,14 +298,12 @@ export function BrowserConcept({ scene }: { scene: "code" | "work" }) {
         ))}
         <div className="gd-btab-note">
           <div className="gd-btab-note-target">
-            <span className="gd-btab-tag">{view.tag}</span>
+            <ClaudeIcon className="gd-btab-ic" />
+            Claude Code
+            <span className="gd-btab-tag">{view.action}</span>
             {view.target}
           </div>
           <div className="gd-btab-note-text">{view.comment}</div>
-          <div className="gd-btab-note-actions">
-            <span className="gd-btab-action">Cancel</span>
-            <span className="gd-btab-save">Add to prompt</span>
-          </div>
         </div>
       </div>
     </div>
