@@ -543,7 +543,11 @@ export default async function browserAutomationPlugin(bb: BbPluginApi) {
                 recordSchema.parse(await bb.storage.kv.get(key)).session,
             ),
         );
-        return records;
+        return records.sort(
+          (a, b) =>
+            Number(b.state === "ready") - Number(a.state === "ready") ||
+            b.createdAt - a.createdAt,
+        );
       },
       run: (input) => run(input, signal),
       pages: (input) =>

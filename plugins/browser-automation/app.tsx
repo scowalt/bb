@@ -87,7 +87,10 @@ function PreviewImage({
         "overflow-hidden rounded-md border border-border/60 bg-background",
         className,
       )}
-      style={{ aspectRatio: `${aspect.width} / ${aspect.height}` }}
+      style={{
+        aspectRatio: `${aspect.width} / ${aspect.height}`,
+        maxWidth: `calc(24rem * ${aspect.width / aspect.height})`,
+      }}
     >
       {frame ? (
         <img
