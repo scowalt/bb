@@ -17,12 +17,12 @@ afterEach(async () => {
 
 function fakeLauncher(pages: string[] = []) {
   const log: string[] = [];
-  const launches: { userDataDir: string; urls: string[] }[] = [];
+  const launches: { userDataDir: string; urls: string[]; scale: number }[] = [];
   let count = 0;
   const launcher: BrowserLauncher = {
-    async launch({ userDataDir, urls }) {
+    async launch({ userDataDir, urls, scale }) {
       const id = ++count;
-      launches.push({ userDataDir, urls });
+      launches.push({ userDataDir, urls, scale });
       log.push(`launch ${id}`);
       let exit!: () => void;
       const exited = new Promise<void>((resolve) => (exit = resolve));
@@ -77,9 +77,11 @@ describe("host browser registry", () => {
     const other = await registry.acquire({ ...args, profile: "work" });
     expect(second.connectionUrl).toBe(first.connectionUrl);
     expect(other.connectionUrl).not.toBe(first.connectionUrl);
-    expect(fake.launches.map((launch) => launch.userDataDir)).toEqual([
-      join(dir, "profiles", "default"),
-      join(dir, "profiles", "work"),
+    expect(
+      fake.launches.map((launch) => [launch.userDataDir, launch.scale]),
+    ).toEqual([
+      [join(dir, "profiles", "default"), 2],
+      [join(dir, "profiles", "work"), 2],
     ]);
     await first.release();
     await first.release();

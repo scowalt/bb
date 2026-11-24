@@ -1206,7 +1206,10 @@ describe("server live preview", () => {
           afterSequence: 6,
           size: "full",
         }),
-      ).toEqual({ session: local, frame });
+      ).toEqual({
+        session: { ...local, expiresAt: expect.any(Number) },
+        frame,
+      });
       expect(h.worker).toHaveBeenCalledWith(
         expect.objectContaining({
           hostId: "local-host",
