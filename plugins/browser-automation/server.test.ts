@@ -917,6 +917,8 @@ describe("server live preview", () => {
     height: 720,
     url: "https://example.test/cart",
     title: "Cart",
+    tabs: [{ id: "tab-1", url: "https://example.test/cart", title: "Cart" }],
+    activeTabId: "tab-1",
   };
   async function openLocal(
     h: Awaited<ReturnType<typeof setup>>,
@@ -929,6 +931,245 @@ describe("server live preview", () => {
       }),
     );
   }
+  const owned = (sessionId: string) => ({
+    threadId: "thread-test",
+    sessionId,
+  });
+  const hostCalls = (h: Awaited<ReturnType<typeof setup>>, method: string) =>
+    h.worker.mock.calls.filter(([call]) => call.method === method);
+  async function listed(h: Awaited<ReturnType<typeof setup>>, id: string) {
+    return rpcContract.list.output
+      .parse(
+        await h.harness.behavior.callRpc("list", { threadId: "thread-test" }),
+      )
+      .find((entry) => entry.id === id);
+  }
+  function inThreadEnvironment(
+    h: Awaited<ReturnType<typeof setup>>,
+    environmentId: string | null,
+  ) {
+    h.harness.sdk.stub("threads.get", async () =>
+      makeThreadResponse({ id: "thread-test", environmentId }),
+    );
+    h.harness.sdk.stub("environments.get", async () => ({
+      hostId: "env-host",
+    }));
+  }
+  it("forwards viewer input to the browser host and counts it and full-size viewing as activity", async () => {
+    vi.useFakeTimers();
+    const h = await setup();
+    try {
+      const local = await openLocal(h);
+      h.worker.mockImplementation(async ({ method }) =>
+        method === "preview" ? { frame } : null,
+      );
+      const actions = [
+        { type: "text" as const, text: "hi" },
+        { type: "reload" as const },
+      ];
+      vi.setSystemTime(local.createdAt + 20 * 60_000);
+      expect(
+        await h.harness.behavior.callRpc("input", {
+          ...owned(local.id),
+          actions,
+        }),
+      ).toBeNull();
+      expect(hostCalls(h, "input")[0]?.[0]).toMatchObject({
+        hostId: "local-host",
+        input: { sessionId: local.id, actions },
+      });
+      expect((await listed(h, local.id))?.expiresAt).toBe(
+        Date.now() + 30 * 60_000,
+      );
+      vi.setSystemTime(local.createdAt + 40 * 60_000);
+      await h.harness.behavior.callRpc("preview", {
+        ...owned(local.id),
+        size: "full",
+      });
+      expect((await listed(h, local.id))?.expiresAt).toBe(
+        Date.now() + 30 * 60_000,
+      );
+      await vi.advanceTimersByTimeAsync(29 * 60_000);
+      expect((await listed(h, local.id))?.state).toBe("ready");
+    } finally {
+      await h.harness.lifecycle.dispose();
+      vi.useRealTimers();
+    }
+  });
+  it("refuses viewer input from another thread, for desktop sessions, and after close", async () => {
+    const h = await setup();
+    try {
+      const desktop = await h.open();
+      const local = await openLocal(h);
+      const actions = [{ type: "reload" as const }];
+      await expect(
+        h.harness.behavior.callRpc("input", {
+          threadId: "other",
+          sessionId: local.id,
+          actions,
+        }),
+      ).rejects.toThrow();
+      await expect(
+        h.harness.behavior.callRpc("input", {
+          ...owned(desktop.id),
+          actions,
+        }),
+      ).rejects.toThrow("ready local browser");
+      await h.harness.behavior.callRpc("close", owned(local.id));
+      await expect(
+        h.harness.behavior.callRpc("input", { ...owned(local.id), actions }),
+      ).rejects.toThrow("ready local browser");
+      expect(hostCalls(h, "input")).toHaveLength(0);
+    } finally {
+      await h.harness.lifecycle.dispose();
+    }
+  });
+  it("opens one default-profile browser on the thread's environment host and reuses it", async () => {
+    const h = await setup();
+    try {
+      inThreadEnvironment(h, "env-1");
+      const [first, second] = await Promise.all([
+        h.harness.behavior.callRpc("openForThread", {
+          threadId: "thread-test",
+        }),
+        h.harness.behavior.callRpc("openForThread", {
+          threadId: "thread-test",
+        }),
+      ]);
+      expect(second).toEqual(first);
+      expect(first).toMatchObject({
+        hostId: "env-host",
+        backend: "local",
+        profile: "default",
+        state: "ready",
+      });
+      expect(hostCalls(h, "open")).toHaveLength(1);
+      expect(hostCalls(h, "open")[0]?.[0]).toMatchObject({
+        hostId: "env-host",
+        input: { profile: "default" },
+      });
+      expect(h.harness.sdk.callsTo("environments.get")).toEqual([
+        [expect.objectContaining({ environmentId: "env-1" })],
+      ]);
+      const session = rpcContract.openForThread.output.parse(first);
+      expect(
+        await h.harness.behavior.callRpc("openForThread", {
+          threadId: "thread-test",
+        }),
+      ).toEqual(session);
+      await h.harness.behavior.callRpc("close", owned(session.id));
+      const reopened = rpcContract.openForThread.output.parse(
+        await h.harness.behavior.callRpc("openForThread", {
+          threadId: "thread-test",
+        }),
+      );
+      expect(reopened.id).not.toBe(session.id);
+      expect(hostCalls(h, "open")).toHaveLength(2);
+    } finally {
+      await h.harness.lifecycle.dispose();
+    }
+  });
+  it("reuses a local session the agent already opened instead of starting another", async () => {
+    const h = await setup();
+    try {
+      inThreadEnvironment(h, "env-1");
+      const agent = await openLocal(h);
+      expect(
+        await h.harness.behavior.callRpc("openForThread", {
+          threadId: "thread-test",
+        }),
+      ).toEqual(agent);
+      expect(hostCalls(h, "open")).toHaveLength(1);
+    } finally {
+      await h.harness.lifecycle.dispose();
+    }
+  });
+  it("explains that a thread without an environment needs the CLI", async () => {
+    const h = await setup();
+    try {
+      inThreadEnvironment(h, null);
+      await expect(
+        h.harness.behavior.callRpc("openForThread", {
+          threadId: "thread-test",
+        }),
+      ).rejects.toThrow("no environment host");
+      inThreadEnvironment(h, "env-1");
+      await expect(
+        h.harness.behavior.callRpc("openForThread", {
+          threadId: "thread-test",
+        }),
+      ).resolves.toMatchObject({ state: "ready" });
+    } finally {
+      await h.harness.lifecycle.dispose();
+    }
+  });
+  it("records the profile on sessions and reads older stored sessions as profileless", async () => {
+    const h = await setup();
+    try {
+      const desktop = await h.open();
+      const opened = await h.harness.behavior.runCli(
+        [
+          "open",
+          "--backend",
+          "local",
+          "--headless",
+          "--machine",
+          "local-host",
+          "--profile",
+          "work",
+          "--json",
+        ],
+        { threadId: "thread-test" },
+      );
+      expect(opened.exitCode).toBe(0);
+      const { previewDirective: _directive, ...profiled } = JSON.parse(
+        opened.stdout,
+      );
+      expect(profiled.profile).toBe("work");
+      expect(desktop.profile).toBeNull();
+      expect(hostCalls(h, "open")).toEqual([
+        [
+          expect.objectContaining({
+            input: expect.not.objectContaining({ profile: expect.anything() }),
+          }),
+        ],
+        [
+          expect.objectContaining({
+            input: expect.objectContaining({ profile: "work" }),
+          }),
+        ],
+      ]);
+      const { profile: _profile, ...legacy } = {
+        ...profiled,
+        id: "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b",
+      };
+      await h.bb.storage.kv.set(`sessions/thread-test/${legacy.id}`, {
+        session: legacy,
+        desktop: null,
+        lastUsed: legacy.createdAt,
+        cleanupPending: false,
+      });
+      expect(await listed(h, legacy.id)).toMatchObject({ profile: null });
+      const invalid = await h.harness.behavior.runCli(
+        [
+          "open",
+          "--backend",
+          "local",
+          "--headless",
+          "--machine",
+          "local-host",
+          "--profile",
+          "Bad Name",
+        ],
+        { threadId: "thread-test" },
+      );
+      expect(invalid.exitCode).toBe(1);
+      expect(invalid.stderr).toContain("Profile names");
+      expect(hostCalls(h, "open")).toHaveLength(2);
+    } finally {
+      await h.harness.lifecycle.dispose();
+    }
+  });
   it("long-polls the browser host for headless frames only", async () => {
     const h = await setup();
     try {
@@ -1052,6 +1293,8 @@ describe("server live preview", () => {
           height: 720,
           url: frame.url,
           title: "Cart",
+          activeTabId: "tab-1",
+          tabs: frame.tabs,
           bytes: 10,
         },
       });

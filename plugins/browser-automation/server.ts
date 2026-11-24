@@ -7,6 +7,7 @@ import type {
 } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import {
+  DEFAULT_PROFILE,
   hostContract,
   rpcContract,
   sessionSchema,
@@ -36,7 +37,9 @@ const desktopSchema = z
   .strict();
 const recordSchema = z
   .object({
-    session: sessionSchema,
+    session: sessionSchema.extend({
+      profile: sessionSchema.shape.profile.default(null),
+    }),
     desktop: desktopSchema.nullable(),
     lastUsed: z.number(),
     cleanupPending: z.boolean(),
@@ -244,6 +247,10 @@ export default async function browserAutomationPlugin(bb: BbPluginApi) {
       threadId: input.threadId,
       hostId: input.selection.hostId,
       backend: input.selection.backend,
+      profile:
+        input.selection.backend === "local"
+          ? (input.selection.profile ?? null)
+          : null,
       state: "ready",
       createdAt: now,
       expiresAt: now + idleTimeoutMs,
@@ -340,6 +347,7 @@ export default async function browserAutomationPlugin(bb: BbPluginApi) {
         {
           sessionId: session.id,
           ...(connectionUrl === undefined ? {} : { connectionUrl }),
+          ...(session.profile === null ? {} : { profile: session.profile }),
           expiresAt: hardDeadline(session),
           idleTimeoutMs,
         },
@@ -436,17 +444,18 @@ export default async function browserAutomationPlugin(bb: BbPluginApi) {
       if (current?.session.state === "ready") await touch(current);
     }
   }
+  const viewable = (session: Session) =>
+    session.backend === "local" &&
+    session.state === "ready" &&
+    Date.now() < session.expiresAt;
   async function preview(
     input: z.output<typeof rpcContract.preview.input>,
     signal: AbortSignal,
   ): Promise<PreviewOutput> {
-    const { session } = await owned(input.threadId, input.sessionId);
-    if (
-      session.backend !== "local" ||
-      session.state !== "ready" ||
-      Date.now() >= session.expiresAt
-    )
-      return { session, frame: null };
+    const record = await owned(input.threadId, input.sessionId);
+    const { session } = record;
+    if (!viewable(session)) return { session, frame: null };
+    if (input.size === "full") await touch(record);
     const { frame } = await host.call(
       "preview",
       {
@@ -458,6 +467,63 @@ export default async function browserAutomationPlugin(bb: BbPluginApi) {
       { hostId: session.hostId, signal },
     );
     return { session, frame };
+  }
+  async function input(
+    request: z.output<typeof rpcContract.input.input>,
+    signal: AbortSignal,
+  ): Promise<null> {
+    const record = await owned(request.threadId, request.sessionId);
+    if (!viewable(record.session))
+      throw new Error(
+        "Session is not a ready local browser; open a new session",
+      );
+    await touch(record);
+    return host.call(
+      "input",
+      { sessionId: request.sessionId, actions: request.actions },
+      { hostId: record.session.hostId, signal },
+    );
+  }
+  const openingForThread = new Map<string, Promise<Session>>();
+  async function threadHost(threadId: string, signal: AbortSignal) {
+    const { environmentId } = await bb.sdk.threads.get({ threadId, signal });
+    const hostId =
+      environmentId === null
+        ? null
+        : (await bb.sdk.environments.get({ environmentId, signal })).hostId;
+    if (!hostId)
+      throw new Error(
+        "This thread has no environment host; open a browser with the CLI",
+      );
+    return hostId;
+  }
+  function openForThread(threadId: string, signal: AbortSignal) {
+    const inFlight = openingForThread.get(threadId);
+    if (inFlight) return inFlight;
+    const reusable = [...active.values()]
+      .map((record) => record.session)
+      .filter(
+        (session) =>
+          session.threadId === threadId &&
+          viewable(session) &&
+          Date.now() < hardDeadline(session),
+      )
+      .sort((a, b) => b.createdAt - a.createdAt)[0];
+    if (reusable) return Promise.resolve(reusable);
+    const work = (async () =>
+      open(
+        {
+          threadId,
+          selection: {
+            backend: "local",
+            hostId: await threadHost(threadId, signal),
+            profile: DEFAULT_PROFILE,
+          },
+        },
+        signal,
+      ))().finally(() => openingForThread.delete(threadId));
+    openingForThread.set(threadId, work);
+    return work;
   }
   function handlers(
     signal: AbortSignal,
@@ -494,7 +560,9 @@ export default async function browserAutomationPlugin(bb: BbPluginApi) {
           },
           signal,
         ),
-      preview: (input) => preview(input, signal),
+      preview: (request) => preview(request, signal),
+      input: (request) => input(request, signal),
+      openForThread: ({ threadId }) => openForThread(threadId, signal),
       stop: async (input) =>
         finish(await owned(input.threadId, input.sessionId), "stopped"),
       close: async (input) =>
@@ -531,7 +599,7 @@ export default async function browserAutomationPlugin(bb: BbPluginApi) {
     tools: [],
     skills: ["browser-automation"],
     instructions:
-      "When `bb browser-automation open` returns a previewDirective, copy it into your next response exactly once as a standalone line before you continue working. Do not wrap it in backticks or a code fence, and do not invent or edit the session ID. The directive shows the user a live view of that headless browser in BB chat. Desktop sessions return no directive.",
+      "Before opening a browser, run `bb browser-automation list`; if this thread already has a ready local session, possibly opened by the user from the side panel, reuse it. Open local sessions with `--profile default` to share the browser the user signs in to from the side panel. When `bb browser-automation open` returns a previewDirective, copy it into your next response exactly once as a standalone line before you continue working. Do not wrap it in backticks or a code fence, and do not invent or edit the session ID. The directive shows the user a live view of that headless browser in BB chat. Desktop sessions return no directive.",
   }));
   async function executeCli(
     request: BrowserCliRequest,
@@ -611,6 +679,8 @@ export default async function browserAutomationPlugin(bb: BbPluginApi) {
                   height: previewed.data.frame.height,
                   url: previewed.data.frame.url,
                   title: previewed.data.frame.title,
+                  activeTabId: previewed.data.frame.activeTabId,
+                  tabs: previewed.data.frame.tabs,
                   bytes: Buffer.byteLength(previewed.data.frame.data, "base64"),
                 },
               }
