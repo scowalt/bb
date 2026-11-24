@@ -35,49 +35,41 @@ function cli() {
 }
 
 describe("CLI boundaries", () => {
-  it("requires explicit backend, host, and headless selection", async () => {
+  it("opens the default profile on the thread's host unless told otherwise", async () => {
     const { invoke, requestFor, execute } = cli();
-    const missingHeadless = await invoke([
-      "open",
-      "--backend",
-      "local",
-      "--machine",
-      "host",
-    ]);
-    expect(missingHeadless.exitCode).toBe(1);
-    expect(missingHeadless.stderr).toContain("--headless");
-
-    const request = await requestFor([
-      "open",
-      "--backend",
-      "local",
-      "--machine",
-      "host",
-      "--headless",
-    ]);
-    expect(request.input.selection).toEqual({
-      backend: "local",
-      hostId: "host",
+    expect((await requestFor(["open"])).input).toEqual({
+      threadId: "thread",
+      profile: "default",
+    });
+    expect(
+      (await requestFor(["open", "--machine", "host", "--profile", "work"]))
+        .input,
+    ).toEqual({ threadId: "thread", hostId: "host", profile: "work" });
+    expect((await requestFor(["open", "--temporary"])).input).toEqual({
+      threadId: "thread",
+      profile: null,
     });
 
-    const badBackend = await invoke(["open", "--backend", "cloud"]);
-    expect(badBackend.exitCode).toBe(1);
-    expect(badBackend.stderr).toContain(
-      "invalid value 'cloud' for --backend. Expected one of: desktop, local",
+    const both = await invoke(["open", "--temporary", "--profile", "work"]);
+    expect(both.exitCode).toBe(1);
+    expect(both.stderr).toContain(
+      "--profile and --temporary cannot be combined",
     );
 
-    const missingMachine = await invoke(["open", "--backend", "desktop"]);
-    expect(missingMachine.exitCode).toBe(1);
-    expect(missingMachine.stderr).toContain(
-      "missing required options: --machine",
-    );
-    expect(execute).toHaveBeenCalledTimes(1);
+    const badProfile = await invoke(["open", "--profile", "Bad Name"]);
+    expect(badProfile.exitCode).toBe(1);
+    expect(badProfile.stderr).toContain("Profile names");
+
+    const oldBackend = await invoke(["open", "--backend", "local"]);
+    expect(oldBackend.exitCode).toBe(1);
+    expect(oldBackend.stderr).toContain("unknown option '--backend'");
+    expect(execute).toHaveBeenCalledTimes(3);
   });
 
   it("rejects ignored flags and both script sources", async () => {
     const { invoke, execute } = cli();
-    const unknownFlag = await invoke(["list", "--headless"]);
-    expect(unknownFlag.stderr).toContain("unknown option '--headless'");
+    const unknownFlag = await invoke(["list", "--profile", "default"]);
+    expect(unknownFlag.stderr).toContain("unknown option '--profile'");
 
     const bothScripts = await invoke([
       "run",
@@ -232,9 +224,6 @@ describe("CLI boundaries", () => {
       "run, pages, and screenshot renew expiry to 30 minutes",
     );
     expect(top.stdout).toContain("capped at 8 hours from creation");
-    expect(top.stdout).toContain(
-      "non-renewable control lease/connection deadline",
-    );
     expect(top.stdout).toContain(
       "list and thumbnail previews do not renew expiry; the full-size viewer and its input do",
     );

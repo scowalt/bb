@@ -64,7 +64,6 @@ function newestReadySession(sessions: readonly Session[]): Session | null {
   for (const session of sessions)
     if (
       session.state === "ready" &&
-      session.backend === "local" &&
       (newest === null || session.createdAt > newest.createdAt)
     )
       newest = session;

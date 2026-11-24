@@ -10,7 +10,6 @@ export const sessionSchema = z
     id: sessionIdSchema,
     threadId: idSchema,
     hostId: idSchema,
-    backend: z.enum(["desktop", "local"]),
     profile: profileSchema.nullable(),
     state: z.enum(["ready", "stopped", "closed"]),
     createdAt: z.number().int(),
@@ -18,25 +17,12 @@ export const sessionSchema = z
   })
   .strict();
 export type Session = z.infer<typeof sessionSchema>;
-export const selectionSchema = z.discriminatedUnion("backend", [
-  z
-    .object({
-      backend: z.literal("local"),
-      hostId: idSchema,
-      profile: profileSchema.optional(),
-    })
-    .strict(),
-  z
-    .object({
-      backend: z.literal("desktop"),
-      hostId: idSchema,
-      instanceId: idSchema,
-      tabId: idSchema.optional(),
-    })
-    .strict(),
-]);
 export const openSchema = z
-  .object({ threadId: idSchema, selection: selectionSchema })
+  .object({
+    threadId: idSchema,
+    hostId: idSchema.optional(),
+    profile: profileSchema.nullable().default(DEFAULT_PROFILE),
+  })
   .strict();
 export const ownedSchema = z
   .object({ threadId: idSchema, sessionId: sessionIdSchema })
@@ -201,7 +187,6 @@ export const hostContract = defineRpcContract({
     input: z
       .object({
         sessionId: sessionIdSchema,
-        connectionUrl: z.string().url().optional(),
         profile: profileSchema.optional(),
         expiresAt: z.number().int(),
         idleTimeoutMs: z.number().int().positive(),

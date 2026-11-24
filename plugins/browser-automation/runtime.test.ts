@@ -212,13 +212,21 @@ const describeOnPosix = process.platform === "win32" ? describe.skip : describe;
 describeOnPosix("runtime session", () => {
   it("keeps the session open after a run passes the output limit", async () => {
     const { root, binary } = await fakeDevBrowser();
-    const session = await createRuntime({
-      runtime: { binary, version: "1.0.0-test", source: "release" },
-      dataDir: root,
-      tempDir: join(root, "sessions"),
-      connectionUrl: "ws://127.0.0.1:9/devtools/browser/test",
-      signal: AbortSignal.timeout(10_000),
-    });
+    const session = await createRuntime(
+      {
+        runtime: { binary, version: "1.0.0-test", source: "release" },
+        dataDir: root,
+        tempDir: join(root, "sessions"),
+        signal: AbortSignal.timeout(10_000),
+      },
+      {
+        acquire: async () => ({
+          connectionUrl: "ws://127.0.0.1:9/devtools/browser/test",
+          persistent: false,
+          async release() {},
+        }),
+      },
+    );
     try {
       const flood = await session.run(
         "flood",
@@ -263,7 +271,6 @@ describeOnPosix("runtime session", () => {
       expect(acquire).toHaveBeenCalledWith(
         expect.objectContaining({ profile: "default", dataDir: root }),
       );
-      expect(session.preview).not.toBeNull();
       await session.close();
       await session.close();
       const scripts = (await readFile(join(root, "scripts.log"), "utf8"))

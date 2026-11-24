@@ -10,8 +10,6 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { strict as assert } from "node:assert";
-import { supervise } from "./process.js";
-import { setTimeout as delay } from "node:timers/promises";
 import { createRuntime } from "./runtime.js";
 import { z } from "zod";
 
@@ -48,7 +46,6 @@ function jpegWidth(base64: string): number {
   }
   throw new Error("JPEG frame header not found");
 }
-const attachedBrowsers: ReturnType<typeof supervise>[] = [];
 const sessions: Awaited<ReturnType<typeof createRuntime>>[] = [];
 try {
   const args = {
@@ -85,7 +82,6 @@ try {
     Buffer.from([0xff, 0xd8, 0xff]),
   );
   assert.ok(screenshot.images[0]!.width <= 960);
-  assert.ok(a.preview);
   const firstFrame = await a.preview.next(0, 10_000, args.signal, "thumbnail");
   assert.ok(firstFrame);
   assert.deepEqual(
@@ -175,54 +171,6 @@ try {
   );
   await c.close();
   await assert.rejects(c.run("1", 1000, args.signal));
-  const profile = join(root, "handed-off-profile");
-  const attachedBrowser = supervise(
-    resolve(chrome),
-    [
-      "--headless=new",
-      "--no-sandbox",
-      "--remote-debugging-port=0",
-      `--user-data-dir=${profile}`,
-      "--no-first-run",
-      "about:blank",
-    ],
-    process.env,
-  );
-  attachedBrowsers.push(attachedBrowser);
-  let portFile = "";
-  const deadline = AbortSignal.timeout(15_000);
-  while (!portFile) {
-    deadline.throwIfAborted();
-    try {
-      portFile = await readFile(join(profile, "DevToolsActivePort"), "utf8");
-    } catch {
-      await delay(25);
-    }
-  }
-  const [port, path] = portFile.trim().split("\n");
-  const connectionUrl = `ws://127.0.0.1:${port}${path}`;
-  const attached = await createRuntime({ ...args, connectionUrl });
-  sessions.push(attached);
-  assert.equal(attached.preview, null);
-  assert.equal(
-    (
-      await attached.run(
-        'const p = await browser.getPage("main"); await p.goto("data:text/html,handoff-preserved"); p.url()',
-        10_000,
-        args.signal,
-      )
-    ).exitCode,
-    0,
-  );
-  await attached.close();
-  assert.equal(attachedBrowser.alive(), true);
-  const reattached = await createRuntime({ ...args, connectionUrl });
-  sessions.push(reattached);
-  assert.match(
-    (await reattached.run("await browser.listPages()", 10_000, args.signal))
-      .text,
-    /handoff-preserved/,
-  );
   console.log(
     JSON.stringify({
       passed: true,
@@ -231,18 +179,15 @@ try {
         "readable temporary JPEG",
         "live preview follows the active page while scripts run",
         "live preview switches to full-size frames on request",
-        "attached sessions expose no preview",
         "serialized scripts",
         "cancellation isolation",
         "infinite-loop timeout",
         "reopen after timeout",
         "close rejects further work",
-        "attachment close preserves browser and page state",
       ],
     }),
   );
 } finally {
   await Promise.all(sessions.map((session) => session.close()));
-  await Promise.all(attachedBrowsers.map((browser) => browser.close()));
   await rm(root, { recursive: true, force: true });
 }
