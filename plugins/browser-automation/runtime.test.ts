@@ -10,7 +10,7 @@ import {
 } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createRuntime, decodeOutput, runtimeEnvironment } from "./runtime.js";
 
 const dirs: string[] = [];
@@ -23,6 +23,33 @@ const done = { type: "done", exitCode: 0, durationMs: 1 };
 const endpoint = "ws://127.0.0.1:9999/cdp?token=private-secret";
 const frames = (...items: object[]) =>
   items.map((item) => JSON.stringify(item)).join("\n");
+async function fakeDevBrowser() {
+  const root = await mkdtemp(join(tmpdir(), "browser-runtime-test-"));
+  dirs.push(root);
+  const binary = join(root, "dev-browser");
+  await writeFile(
+    binary,
+    `#!${process.execPath}
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+if (args[0] === "daemon") {
+  fs.writeFileSync(process.env.DEV_BROWSER_HOME + "/daemon.pid", String(process.pid));
+  setInterval(() => {}, 1000);
+} else {
+  const script = args[args.indexOf("-e") + 1];
+  fs.appendFileSync(__dirname + "/scripts.log", script + "\\n");
+  if (script === "flood") setInterval(() => fs.writeSync(1, "x".repeat(64000)), 5);
+  else {
+    fs.writeSync(1, JSON.stringify({ type: "result", value: script }) + "\\n");
+    fs.writeSync(1, JSON.stringify({ type: "done", exitCode: 0, durationMs: 1 }) + "\\n");
+  }
+}
+`,
+  );
+  await chmod(binary, 0o755);
+  return { root, binary };
+}
+
 describe("runtime output boundary", () => {
   it("returns a readable temporary JPEG path without embedding image bytes", async () => {
     const home = await mkdtemp(join(tmpdir(), "browser-capture-test-"));
@@ -184,28 +211,7 @@ const describeOnPosix = process.platform === "win32" ? describe.skip : describe;
 
 describeOnPosix("runtime session", () => {
   it("keeps the session open after a run passes the output limit", async () => {
-    const root = await mkdtemp(join(tmpdir(), "browser-runtime-test-"));
-    dirs.push(root);
-    const binary = join(root, "dev-browser");
-    await writeFile(
-      binary,
-      `#!${process.execPath}
-const fs = require("node:fs");
-const args = process.argv.slice(2);
-if (args[0] === "daemon") {
-  fs.writeFileSync(process.env.DEV_BROWSER_HOME + "/daemon.pid", String(process.pid));
-  setInterval(() => {}, 1000);
-} else {
-  const script = args[args.indexOf("-e") + 1];
-  if (script === "flood") setInterval(() => fs.writeSync(1, "x".repeat(64000)), 5);
-  else {
-    fs.writeSync(1, JSON.stringify({ type: "result", value: script }) + "\\n");
-    fs.writeSync(1, JSON.stringify({ type: "done", exitCode: 0, durationMs: 1 }) + "\\n");
-  }
-}
-`,
-    );
-    await chmod(binary, 0o755);
+    const { root, binary } = await fakeDevBrowser();
     const session = await createRuntime({
       runtime: { binary, version: "1.0.0-test", source: "release" },
       dataDir: root,
@@ -227,5 +233,75 @@ if (args[0] === "daemon") {
     } finally {
       await session.close();
     }
+  });
+
+  it.each([
+    { persistent: true, closesNamedPages: true },
+    { persistent: false, closesNamedPages: false },
+  ])(
+    "on close of a host browser (persistent: $persistent) closes its own named pages only in a shared profile, then releases",
+    async ({ persistent, closesNamedPages }) => {
+      const { root, binary } = await fakeDevBrowser();
+      const events: string[] = [];
+      const acquire = vi.fn(async () => ({
+        connectionUrl: "ws://127.0.0.1:9/devtools/browser/host",
+        persistent,
+        async release() {
+          events.push("release");
+        },
+      }));
+      const session = await createRuntime(
+        {
+          runtime: { binary, version: "1.0.0-test", source: "release" },
+          dataDir: root,
+          tempDir: join(root, "sessions"),
+          profile: "default",
+          signal: AbortSignal.timeout(10_000),
+        },
+        { acquire },
+      );
+      expect(acquire).toHaveBeenCalledWith(
+        expect.objectContaining({ profile: "default", dataDir: root }),
+      );
+      expect(session.preview).not.toBeNull();
+      await session.close();
+      await session.close();
+      const scripts = (await readFile(join(root, "scripts.log"), "utf8"))
+        .trim()
+        .split("\n");
+      expect(scripts[0]).toBe("await browser.listPages()");
+      expect(scripts.some((script) => script.includes("closePage"))).toBe(
+        closesNamedPages,
+      );
+      expect(events).toEqual(["release"]);
+    },
+  );
+
+  it("releases the host browser when startup fails", async () => {
+    const root = await mkdtemp(join(tmpdir(), "browser-runtime-test-"));
+    dirs.push(root);
+    const release = vi.fn(async () => {});
+    await expect(
+      createRuntime(
+        {
+          runtime: {
+            binary: join(root, "missing"),
+            version: "1.0.0-test",
+            source: "release",
+          },
+          dataDir: root,
+          tempDir: join(root, "sessions"),
+          signal: AbortSignal.timeout(10_000),
+        },
+        {
+          acquire: async () => ({
+            connectionUrl: "ws://127.0.0.1:9/devtools/browser/host",
+            persistent: false,
+            release,
+          }),
+        },
+      ),
+    ).rejects.toThrow();
+    expect(release).toHaveBeenCalledOnce();
   });
 });

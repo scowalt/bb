@@ -14,7 +14,13 @@ function createFakeBrowser(initial: FakePage[]) {
   const acks: number[] = [];
   const casts: { targetId: string; session: string; maxWidth: number }[] = [];
   const connections: FakeSocket[] = [];
+  const commands: {
+    method: string;
+    params: Record<string, unknown>;
+    target: string | null;
+  }[] = [];
   let nextSession = 0;
+  let nextTarget = 0;
   let nextFrame = 0;
 
   class FakeSocket implements PreviewSocket {
@@ -44,12 +50,51 @@ function createFakeBrowser(initial: FakePage[]) {
           targetId?: string;
           sessionId?: string | number;
           maxWidth?: number;
+          url?: string;
         };
         sessionId?: string;
       };
+      if (
+        message.method.startsWith("Input.") ||
+        message.method.startsWith("Browser.") ||
+        [
+          "Page.navigate",
+          "Page.reload",
+          "Page.navigateToHistoryEntry",
+          "Target.activateTarget",
+          "Target.createTarget",
+          "Target.closeTarget",
+        ].includes(message.method)
+      )
+        commands.push({
+          method: message.method,
+          params: message.params,
+          target:
+            message.sessionId === undefined
+              ? null
+              : (sessions.get(message.sessionId) ?? "detached"),
+        });
       queueMicrotask(() => {
         let result: unknown = {};
-        if (message.method === "Target.setDiscoverTargets") {
+        if (message.method === "Target.createTarget") {
+          const page = {
+            targetId: `new-${++nextTarget}`,
+            type: "page",
+            url: message.params.url!,
+            title: "",
+          };
+          result = { targetId: page.targetId };
+          browser.update(page, "Target.targetCreated");
+        } else if (message.method === "Target.closeTarget") {
+          browser.destroy(message.params.targetId!);
+        } else if (message.method === "Browser.getWindowForTarget") {
+          result = { windowId: 7 };
+        } else if (message.method === "Page.getNavigationHistory") {
+          result = {
+            currentIndex: 1,
+            entries: [{ id: 10 }, { id: 11 }],
+          };
+        } else if (message.method === "Target.setDiscoverTargets") {
           for (const page of pages.values())
             this.event("Target.targetCreated", { targetInfo: page });
         } else if (message.method === "Target.attachToTarget") {
@@ -84,6 +129,7 @@ function createFakeBrowser(initial: FakePage[]) {
 
   const browser = {
     acks,
+    commands,
     casts,
     connections,
     open(): PreviewSocket {
@@ -141,11 +187,12 @@ const shop: FakePage = {
   title: "Cart",
 };
 const timing = {
-  frameIntervalMs: 5,
+  frameIntervalMs: { thumbnail: 5, full: 5 },
   idleMs: 60,
   reconnectMs: 5,
   fullSizeHoldMs: 40,
   settleMs: 40,
+  inputWaitMs: 1_000,
 };
 const never = new AbortController().signal;
 
@@ -191,12 +238,19 @@ describe("live preview", () => {
       "Target.targetCreated",
     );
     browser.update({ ...shop, title: "" });
-    const navigated = await preview.next(
+    let navigated = await preview.next(
       initial!.sequence,
       1_000,
       never,
       "thumbnail",
     );
+    while (navigated!.activeTabId !== "shop")
+      navigated = await preview.next(
+        navigated!.sequence,
+        1_000,
+        never,
+        "thumbnail",
+      );
     expect(navigated).toMatchObject({ url: shop.url, title: "" });
     expect(browser.castTargets()).toEqual(["shop"]);
     browser.update(shop);
@@ -312,5 +366,271 @@ describe("live preview", () => {
       "stopped",
     );
     expect(browser.live()).toHaveLength(0);
+  });
+
+  it("sends viewer input to the page on screen, as CDP commands in order", async () => {
+    const browser = createFakeBrowser([blank, shop]);
+    const preview = createPreview("ws://127.0.0.1:1/x", timing, browser.open);
+    await preview.input(
+      [
+        {
+          type: "mouse",
+          event: "move",
+          x: 5,
+          y: 6,
+          button: "none",
+          clickCount: 0,
+          modifiers: 0,
+        },
+        {
+          type: "mouse",
+          event: "down",
+          x: 5,
+          y: 6,
+          button: "left",
+          clickCount: 1,
+          modifiers: 8,
+        },
+        {
+          type: "mouse",
+          event: "down",
+          x: 5,
+          y: 6,
+          button: "right",
+          clickCount: 1,
+          modifiers: 0,
+        },
+        {
+          type: "mouse",
+          event: "up",
+          x: 5,
+          y: 6,
+          button: "left",
+          clickCount: 1,
+          modifiers: 0,
+        },
+        { type: "wheel", x: 1, y: 2, deltaX: 0, deltaY: 120, modifiers: 0 },
+        {
+          type: "key",
+          event: "down",
+          key: "a",
+          code: "KeyA",
+          text: "a",
+          keyCode: 65,
+          modifiers: 0,
+        },
+        {
+          type: "key",
+          event: "up",
+          key: "a",
+          code: "KeyA",
+          text: "a",
+          keyCode: 65,
+          modifiers: 0,
+        },
+        {
+          type: "key",
+          event: "down",
+          key: "Enter",
+          code: "Enter",
+          keyCode: 13,
+          modifiers: 2,
+        },
+        { type: "text", text: "héllo" },
+        { type: "navigate", url: "https://shop.test/next" },
+        { type: "history", delta: -1 },
+        { type: "history", delta: 1 },
+        { type: "reload" },
+        { type: "resize", width: 600, height: 900 },
+      ],
+      never,
+    );
+    expect(browser.commands).toEqual([
+      {
+        method: "Input.dispatchMouseEvent",
+        target: "shop",
+        params: {
+          type: "mouseMoved",
+          x: 5,
+          y: 6,
+          button: "none",
+          buttons: 0,
+          clickCount: 0,
+          modifiers: 0,
+        },
+      },
+      {
+        method: "Input.dispatchMouseEvent",
+        target: "shop",
+        params: {
+          type: "mousePressed",
+          x: 5,
+          y: 6,
+          button: "left",
+          buttons: 1,
+          clickCount: 1,
+          modifiers: 8,
+        },
+      },
+      {
+        method: "Input.dispatchMouseEvent",
+        target: "shop",
+        params: {
+          type: "mousePressed",
+          x: 5,
+          y: 6,
+          button: "right",
+          buttons: 3,
+          clickCount: 1,
+          modifiers: 0,
+        },
+      },
+      {
+        method: "Input.dispatchMouseEvent",
+        target: "shop",
+        params: {
+          type: "mouseReleased",
+          x: 5,
+          y: 6,
+          button: "left",
+          buttons: 2,
+          clickCount: 1,
+          modifiers: 0,
+        },
+      },
+      {
+        method: "Input.dispatchMouseEvent",
+        target: "shop",
+        params: {
+          type: "mouseWheel",
+          x: 1,
+          y: 2,
+          deltaX: 0,
+          deltaY: 120,
+          modifiers: 0,
+        },
+      },
+      {
+        method: "Input.dispatchKeyEvent",
+        target: "shop",
+        params: {
+          type: "keyDown",
+          key: "a",
+          code: "KeyA",
+          text: "a",
+          unmodifiedText: "a",
+          windowsVirtualKeyCode: 65,
+          modifiers: 0,
+        },
+      },
+      {
+        method: "Input.dispatchKeyEvent",
+        target: "shop",
+        params: {
+          type: "keyUp",
+          key: "a",
+          code: "KeyA",
+          windowsVirtualKeyCode: 65,
+          modifiers: 0,
+        },
+      },
+      {
+        method: "Input.dispatchKeyEvent",
+        target: "shop",
+        params: {
+          type: "rawKeyDown",
+          key: "Enter",
+          code: "Enter",
+          windowsVirtualKeyCode: 13,
+          modifiers: 2,
+        },
+      },
+      { method: "Input.insertText", target: "shop", params: { text: "héllo" } },
+      {
+        method: "Page.navigate",
+        target: "shop",
+        params: { url: "https://shop.test/next" },
+      },
+      {
+        method: "Page.navigateToHistoryEntry",
+        target: "shop",
+        params: { entryId: 10 },
+      },
+      { method: "Page.reload", target: "shop", params: {} },
+      {
+        method: "Browser.getWindowForTarget",
+        target: null,
+        params: { targetId: "shop" },
+      },
+      {
+        method: "Browser.setWindowBounds",
+        target: null,
+        params: { windowId: 7, bounds: { width: 600, height: 900 } },
+      },
+    ]);
+    preview.close();
+  });
+
+  it("keeps showing the tab the user picked and reports every tab in frames", async () => {
+    const browser = createFakeBrowser([blank, shop]);
+    const preview = createPreview(
+      "ws://127.0.0.1:1/x",
+      { ...timing, idleMs: 5_000 },
+      browser.open,
+    );
+    const first = await preview.next(0, 1_000, never, "thumbnail");
+    expect(first).toMatchObject({
+      activeTabId: "shop",
+      tabs: [
+        { id: "blank", url: "about:blank", title: "" },
+        { id: "shop", url: shop.url, title: "Cart" },
+      ],
+    });
+    await preview.input([{ type: "selectTab", tabId: "blank" }], never);
+    expect(browser.castTargets()).toEqual(["blank"]);
+    browser.update({ ...shop, url: "https://shop.test/paid" });
+    await preview.input(
+      [
+        { type: "text", text: "x" },
+        { type: "newTab", url: "https://example.test/" },
+        { type: "text", text: "y" },
+      ],
+      never,
+    );
+    expect(
+      browser.commands
+        .filter((command) => command.method === "Input.insertText")
+        .map((command) => command.target),
+    ).toEqual(["blank", "new-1"]);
+    let frame = await preview.next(0, 1_000, never, "thumbnail");
+    while (frame!.activeTabId !== "new-1" || frame!.tabs.length < 3)
+      frame = await preview.next(frame!.sequence, 1_000, never, "thumbnail");
+    expect(frame!.tabs.map((tab) => tab.id)).toEqual([
+      "blank",
+      "shop",
+      "new-1",
+    ]);
+    await preview.input([{ type: "closeTab", tabId: "new-1" }], never);
+    const after = await preview.next(
+      frame!.sequence,
+      1_000,
+      never,
+      "thumbnail",
+    );
+    expect(browser.castTargets()).toEqual(["shop"]);
+    expect(after).toMatchObject({
+      activeTabId: "shop",
+      tabs: [{ id: "blank" }, { id: "shop" }],
+    });
+    preview.close();
+  });
+
+  it("refuses input after close", async () => {
+    const browser = createFakeBrowser([shop]);
+    const preview = createPreview("ws://127.0.0.1:1/x", timing, browser.open);
+    preview.close();
+    await expect(preview.input([{ type: "reload" }], never)).rejects.toThrow(
+      "stopped",
+    );
   });
 });

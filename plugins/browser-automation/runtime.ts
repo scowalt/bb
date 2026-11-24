@@ -1,20 +1,21 @@
-import { experimental_hostToolchain as hostToolchain } from "@get-bb/plugin-sdk/process";
 import { constants } from "node:fs";
-import {
-  access,
-  mkdir,
-  mkdtemp,
-  open,
-  readFile,
-  realpath,
-  rm,
-} from "node:fs/promises";
+import { mkdir, mkdtemp, open, readFile, realpath, rm } from "node:fs/promises";
 import { isAbsolute, join, relative } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 import { outputSchema, type RunOutput } from "./contracts.js";
 import { createPreview, type PreviewSource } from "./preview.js";
-import { execute, OutputLimitError, supervise } from "./process.js";
+import {
+  hostBrowsers,
+  type BrowserRegistry,
+  type HostBrowser,
+} from "./chrome.js";
+import {
+  baseEnvironment,
+  execute,
+  OutputLimitError,
+  supervise,
+} from "./process.js";
 import type { ResolvedRuntime } from "./runtime-pin.js";
 import { experimental_sliceUtf16Head as sliceUtf16Head } from "@get-bb/plugin-sdk/host";
 
@@ -48,21 +49,11 @@ const frameSchema = z.discriminatedUnion("type", [
 ]);
 
 export function runtimeEnvironment(home: string): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = {};
-  for (const key of [
-    "PATH",
-    "HOME",
-    "LANG",
-    "LC_ALL",
-    "TMPDIR",
-    "XDG_RUNTIME_DIR",
-    "DBUS_SESSION_BUS_ADDRESS",
-  ]) {
-    if (process.env[key]) env[key] = process.env[key];
-  }
-  env.DEV_BROWSER_HOME = home;
-  env.DEV_BROWSER_SOCKET = join(home, "daemon.sock");
-  return env;
+  return {
+    ...baseEnvironment(),
+    DEV_BROWSER_HOME: home,
+    DEV_BROWSER_SOCKET: join(home, "daemon.sock"),
+  };
 }
 
 export async function decodeOutput(
@@ -150,31 +141,6 @@ export async function decodeOutput(
   });
 }
 
-async function findChrome(dataDir: string): Promise<string> {
-  const candidates = [
-    join(dataDir, "runtime", "chrome"),
-    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-  ];
-  for (const name of [
-    "google-chrome",
-    "google-chrome-stable",
-    "chromium",
-    "chromium-browser",
-  ]) {
-    const executable = hostToolchain.resolve(name);
-    if (executable !== null) candidates.push(executable);
-  }
-  for (const candidate of candidates) {
-    try {
-      await access(candidate, constants.X_OK);
-      return await realpath(candidate);
-    } catch {}
-  }
-  throw new Error(
-    "Install Chrome/Chromium on this host or link its executable at the plugin data runtime/chrome path.",
-  );
-}
-
 export interface RuntimeSession {
   run(
     script: string,
@@ -185,18 +151,27 @@ export interface RuntimeSession {
   close(): Promise<void>;
 }
 
-export async function createRuntime(args: {
-  runtime: ResolvedRuntime;
-  dataDir: string;
-  tempDir: string;
-  connectionUrl?: string;
-  signal: AbortSignal;
-}): Promise<RuntimeSession> {
+const closeNamedPages =
+  "for (const page of await browser.listPages()) if (page.name) await browser.closePage(page.name)";
+
+export async function createRuntime(
+  args: {
+    runtime: ResolvedRuntime;
+    dataDir: string;
+    tempDir: string;
+    connectionUrl?: string;
+    profile?: string;
+    signal: AbortSignal;
+  },
+  browsers: Pick<BrowserRegistry, "acquire"> = hostBrowsers,
+): Promise<RuntimeSession> {
   const binary = args.runtime.binary;
   await mkdir(args.tempDir, { recursive: true, mode: 0o700 });
   const home = await mkdtemp(join(args.tempDir, "db-"));
   const env = runtimeEnvironment(home);
   const processes: ReturnType<typeof supervise>[] = [];
+  let browser: HostBrowser | null = null;
+  let connectionUrl: string | null = null;
   let closed = false;
   let closing: Promise<void> | null = null;
   let preview: PreviewSource | null = null;
@@ -208,7 +183,28 @@ export async function createRuntime(args: {
     stopped.abort();
     preview?.close();
     const attempt = (async () => {
+      if (
+        browser?.persistent &&
+        connectionUrl !== null &&
+        processes.length > 0 &&
+        processes.every((child) => child.alive())
+      )
+        await execute(
+          binary,
+          [
+            "--json",
+            "--connect",
+            connectionUrl,
+            "--timeout",
+            "5",
+            "-e",
+            closeNamedPages,
+          ],
+          env,
+          AbortSignal.timeout(5_000),
+        ).catch(() => {});
       await Promise.all(processes.map((child) => child.close()));
+      await browser?.release();
       await rm(home, { recursive: true, force: true });
     })().catch((error: unknown) => {
       if (closing === attempt) closing = null;
@@ -223,7 +219,7 @@ export async function createRuntime(args: {
       startup.throwIfAborted();
       if (processes.some((child) => !child.alive()))
         throw new Error(
-          "Browser runtime exited during startup; check Chrome installation and runtime dependencies.",
+          "Browser runtime exited during startup; check the DevBrowser runtime dependencies.",
         );
       try {
         return await readFile(path, "utf8");
@@ -233,38 +229,17 @@ export async function createRuntime(args: {
     }
   }
   try {
-    let connectionUrl = args.connectionUrl;
-    if (connectionUrl === undefined) {
-      const chrome = await findChrome(args.dataDir);
-      const profile = join(home, "profile");
-      processes.push(
-        supervise(
-          chrome,
-          [
-            "--headless=new",
-            "--no-sandbox",
-            "--remote-debugging-port=0",
-            "--remote-debugging-address=127.0.0.1",
-            `--user-data-dir=${profile}`,
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--window-size=1280,720",
-            "about:blank",
-          ],
-          env,
-        ),
-      );
-      const lines = (await waitForFile(join(profile, "DevToolsActivePort")))
-        .trim()
-        .split("\n");
-      const port = z.coerce.number().int().min(1).max(65535).parse(lines[0]);
-      const path = z
-        .string()
-        .regex(/^\/devtools\/browser\/[a-zA-Z0-9-]+$/)
-        .parse(lines[1]);
-      connectionUrl = `ws://127.0.0.1:${port}${path}`;
-    }
-    const endpoint = new URL(connectionUrl);
+    let url: string;
+    if (args.connectionUrl === undefined) {
+      browser = await browsers.acquire({
+        dataDir: args.dataDir,
+        tempDir: args.tempDir,
+        profile: args.profile ?? null,
+        signal: startup,
+      });
+      url = browser.connectionUrl;
+    } else url = args.connectionUrl;
+    const endpoint = new URL(url);
     if (
       endpoint.protocol !== "ws:" ||
       !["127.0.0.1", "localhost", "[::1]"].includes(endpoint.hostname)
@@ -272,9 +247,9 @@ export async function createRuntime(args: {
       throw new Error(
         "Desktop connection must be a private loopback WebSocket on the selected host",
       );
+    connectionUrl = url;
     processes.push(supervise(binary, ["daemon"], env));
     await waitForFile(join(home, "daemon.pid"));
-    const url = connectionUrl;
     const run = (
       script: string,
       timeoutMs: number,
@@ -331,7 +306,7 @@ export async function createRuntime(args: {
       return result;
     };
     await run("await browser.listPages()", 30_000, startup);
-    if (args.connectionUrl === undefined) preview = createPreview(url);
+    if (browser) preview = createPreview(url);
     return { run, preview, close };
   } catch (error) {
     await close();
