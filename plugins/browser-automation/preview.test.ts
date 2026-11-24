@@ -14,6 +14,7 @@ function createFakeBrowser(initial: FakePage[]) {
   const acks: number[] = [];
   const casts: { targetId: string; session: string; maxWidth: number }[] = [];
   const connections: FakeSocket[] = [];
+  const toolbarHeights = new Map<string, unknown>();
   const commands: {
     method: string;
     params: Record<string, unknown>;
@@ -89,6 +90,11 @@ function createFakeBrowser(initial: FakePage[]) {
           browser.destroy(message.params.targetId!);
         } else if (message.method === "Browser.getWindowForTarget") {
           result = { windowId: 7 };
+        } else if (message.method === "Runtime.evaluate") {
+          const target = sessions.get(message.sessionId!)!;
+          result = {
+            result: { type: "number", value: toolbarHeights.get(target) ?? 0 },
+          };
         } else if (message.method === "Page.getNavigationHistory") {
           result = {
             currentIndex: 1,
@@ -130,6 +136,7 @@ function createFakeBrowser(initial: FakePage[]) {
   const browser = {
     acks,
     commands,
+    toolbarHeights,
     casts,
     connections,
     open(): PreviewSocket {
@@ -622,6 +629,32 @@ describe("live preview", () => {
       activeTabId: "shop",
       tabs: [{ id: "blank" }, { id: "shop" }],
     });
+    preview.close();
+  });
+
+  it("sizes the viewport, not the window, to the viewer on every tab", async () => {
+    const browser = createFakeBrowser([blank, shop]);
+    browser.toolbarHeights.set("shop", 143);
+    browser.toolbarHeights.set("blank", 87);
+    browser.toolbarHeights.set("new-1", "page overrode innerHeight");
+    const preview = createPreview("ws://127.0.0.1:1/x", timing, browser.open);
+    await preview.next(0, 1_000, never, "full");
+    const windowHeights = () =>
+      browser.commands
+        .filter((command) => command.method === "Browser.setWindowBounds")
+        .map((command) => command.params.bounds);
+    expect(windowHeights()).toEqual([]);
+
+    await preview.input([{ type: "resize", width: 600, height: 900 }], never);
+    expect(windowHeights()).toEqual([{ width: 600, height: 1043 }]);
+
+    await preview.input([{ type: "selectTab", tabId: "blank" }], never);
+    await preview.input([{ type: "newTab" }], never);
+    expect(windowHeights()).toEqual([
+      { width: 600, height: 1043 },
+      { width: 600, height: 987 },
+      { width: 600, height: 900 },
+    ]);
     preview.close();
   });
 
