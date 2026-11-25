@@ -8,6 +8,7 @@ import {
   findLastTerminalTimelineMessage,
   isSingletonContextManagementOperation,
   isTimelineUngroupableMessage,
+  isTimelineUserExchangeMessage,
 } from "./timeline-message-helpers.js";
 
 interface CompletedTurnSummaryGroup {
@@ -269,9 +270,7 @@ function groupCompletedTurnSummaryMessages(
       continue;
     }
     if (isTimelineUngroupableMessage(message)) {
-      flushGroupedMessages(
-        message.kind === "user" && message.initiator === "user",
-      );
+      flushGroupedMessages(isTimelineUserExchangeMessage(message));
       items.push({
         kind: "ungrouped-message",
         message,

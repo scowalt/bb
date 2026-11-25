@@ -17,9 +17,28 @@ function isTimelineSummaryGroupableSteerMessage(
   );
 }
 
+function isQuestionToUserMessage(message: EventProjectionMessage): boolean {
+  return (
+    message.kind === "user-question-lifecycle" ||
+    message.kind === "plugin-form-lifecycle"
+  );
+}
+
+export function isTimelineUserExchangeMessage(
+  message: EventProjectionMessage,
+): boolean {
+  return (
+    (message.kind === "user" && message.initiator === "user") ||
+    isQuestionToUserMessage(message)
+  );
+}
+
 export function isTimelineUngroupableMessage(
   message: EventProjectionMessage,
 ): boolean {
+  if (isQuestionToUserMessage(message)) {
+    return true;
+  }
   if (message.kind === "user") {
     return !isTimelineSummaryGroupableSteerMessage(message);
   }

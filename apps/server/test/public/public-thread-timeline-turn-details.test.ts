@@ -123,17 +123,28 @@ describe("public timeline turn summary details", () => {
           type: "system/interaction/lifecycle",
           data: {
             interaction: {
-              id: "plugin-question",
+              id: "permission-grant",
               status,
               statusReason: null,
               origin: {
-                kind: "plugin",
-                pluginId: "ask-user-question",
-                rendererId: "question",
+                kind: "provider",
+                providerId: "codex",
+                providerRequestId: "request-permission-grant",
               },
-              payload: { kind: "plugin", title: "Choose an approach" },
+              payload: {
+                kind: "approval",
+                reason: null,
+                subject: {
+                  kind: "permission_grant",
+                  itemId: "item-permission-grant",
+                  toolName: "Bash",
+                  permissions: { network: { enabled: true }, fileSystem: null },
+                },
+              },
               resolution:
-                status === "resolved" ? { kind: "plugin_submitted" } : null,
+                status === "resolved"
+                  ? { decision: "allow_for_session", grantedPermissions: null }
+                  : null,
             },
           },
         });
@@ -212,9 +223,10 @@ describe("public timeline turn summary details", () => {
       expect(details.rows).toEqual([
         expect.objectContaining({
           kind: "work",
-          workKind: "form",
-          interactionId: "plugin-question",
-          lifecycle: "submitted",
+          workKind: "approval",
+          approvalKind: "permission-grant",
+          interactionId: "permission-grant",
+          lifecycle: "granted",
           sourceSeqStart: 2,
           sourceSeqEnd: 3,
         }),
