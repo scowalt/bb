@@ -3235,6 +3235,8 @@ const conversationOutlineLifecycleTypes = [
   "system/thread/interrupted",
   "system/error",
   "provider/error",
+  "system/interaction/lifecycle",
+  "system/userQuestion/lifecycle",
   "item/agentMessage/delta",
   "item/plan/delta",
 ] satisfies ThreadEventType[];
