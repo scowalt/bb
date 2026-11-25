@@ -189,14 +189,70 @@ describe("finished turn display per provider", () => {
   });
 });
 
+type QuestionFinalState = {
+  status: "resolved" | "interrupted";
+  statusReason: "timeout" | null;
+  resolution: { kind: "plugin_submitted" } | null;
+};
+
+const ANSWERED: QuestionFinalState = {
+  status: "resolved",
+  statusReason: null,
+  resolution: { kind: "plugin_submitted" },
+};
+
+function createPiEventSeeder(harness: TestAppHarness) {
+  const { environment, thread } = seedThreadFixture(harness, {
+    thread: { providerId: "pi" },
+  });
+  let sequence = 0;
+  const seed = (
+    type: Parameters<typeof seedEvent>[1]["type"],
+    scope: ReturnType<typeof turnScope> | ReturnType<typeof threadScope>,
+    data: Record<string, unknown>,
+  ) => {
+    sequence += 1;
+    seedEvent(harness.deps, {
+      threadId: thread.id,
+      environmentId: environment.id,
+      providerThreadId: "p1",
+      scope,
+      sequence,
+      type,
+      data,
+    });
+  };
+  return { threadId: thread.id, seed };
+}
+
+function seedQuestion(
+  seed: ReturnType<typeof createPiEventSeeder>["seed"],
+  finalState: QuestionFinalState,
+): void {
+  for (const state of [
+    { status: "pending", statusReason: null, resolution: null },
+    finalState,
+  ]) {
+    seed("system/interaction/lifecycle", threadScope(), {
+      interaction: {
+        id: "which-version",
+        status: state.status,
+        statusReason: state.statusReason,
+        origin: {
+          kind: "plugin",
+          pluginId: "ask-user-question",
+          rendererId: "question",
+        },
+        payload: { kind: "plugin", title: "Which version?" },
+        resolution: state.resolution,
+      },
+    });
+  }
+}
+
 describe("questions in finished turns", () => {
   it.each([
-    {
-      outcome: "answered",
-      status: "resolved",
-      statusReason: null,
-      resolution: { kind: "plugin_submitted" },
-    },
+    { outcome: "answered", ...ANSWERED },
     {
       outcome: "timed out",
       status: "interrupted",
@@ -207,26 +263,7 @@ describe("questions in finished turns", () => {
     "keeps the text before a question visible in the timeline and the outline when it is $outcome",
     async (finalState) => {
       await withTestHarness(async (harness) => {
-        const { environment, thread } = seedThreadFixture(harness, {
-          thread: { providerId: "pi" },
-        });
-        let sequence = 0;
-        const seed = (
-          type: Parameters<typeof seedEvent>[1]["type"],
-          scope: ReturnType<typeof turnScope> | ReturnType<typeof threadScope>,
-          data: Record<string, unknown>,
-        ) => {
-          sequence += 1;
-          seedEvent(harness.deps, {
-            threadId: thread.id,
-            environmentId: environment.id,
-            providerThreadId: "p1",
-            scope,
-            sequence,
-            type,
-            data,
-          });
-        };
+        const { threadId, seed } = createPiEventSeeder(harness);
         const turn = turnScope("turn-1");
         seed("turn/started", turn, {});
         seed("item/completed", turn, {
@@ -245,25 +282,7 @@ describe("questions in finished turns", () => {
             text: "Here are three versions of the note.",
           },
         });
-        for (const state of [
-          { status: "pending", statusReason: null, resolution: null },
-          finalState,
-        ]) {
-          seed("system/interaction/lifecycle", threadScope(), {
-            interaction: {
-              id: "which-version",
-              status: state.status,
-              statusReason: state.statusReason,
-              origin: {
-                kind: "plugin",
-                pluginId: "ask-user-question",
-                rendererId: "question",
-              },
-              payload: { kind: "plugin", title: "Which version?" },
-              resolution: state.resolution,
-            },
-          });
-        }
+        seedQuestion(seed, finalState);
         seed("item/completed", turn, {
           item: {
             type: "agentMessage",
@@ -273,20 +292,76 @@ describe("questions in finished turns", () => {
         });
         seed("turn/completed", turn, { status: "completed" });
 
-        const timeline = await getTimeline(harness, thread.id);
+        const timeline = await getTimeline(harness, threadId);
         expect(timeline.rows.map(rowSignature)).toEqual([
           "turn",
           "conversation:assistant",
           "work:form",
           "conversation:assistant",
         ]);
-        expect(await getOutlinePreviews(harness, thread.id)).toEqual([
+        expect(await getOutlinePreviews(harness, threadId)).toEqual([
           "Here are three versions of the note.",
           "Where this stands: version B is in the draft.",
         ]);
       });
     },
   );
+
+  it("leaves the text and the question out of the expanded fold when the asking tool call ends after the answer", async () => {
+    await withTestHarness(async (harness) => {
+      const { threadId, seed } = createPiEventSeeder(harness);
+      const turn = turnScope("turn-1");
+      const askCall = { type: "toolCall", id: "ask", tool: "ask_user" };
+      seed("turn/started", turn, {});
+      seed("item/completed", turn, {
+        item: {
+          type: "toolCall",
+          id: "read",
+          tool: "read",
+          status: "completed",
+          result: "ok",
+        },
+      });
+      seed("item/completed", turn, {
+        item: {
+          type: "agentMessage",
+          id: "analysis",
+          text: "Here are three versions of the note.",
+        },
+      });
+      seed("item/started", turn, { item: { ...askCall, status: "pending" } });
+      seedQuestion(seed, ANSWERED);
+      seed("item/completed", turn, {
+        item: { ...askCall, status: "completed", result: "B" },
+      });
+      seed("item/completed", turn, {
+        item: {
+          type: "agentMessage",
+          id: "final",
+          text: "Where this stands: version B is in the draft.",
+        },
+      });
+      seed("turn/completed", turn, { status: "completed" });
+
+      const timeline = await getTimeline(harness, threadId);
+      expect(timeline.rows.map(rowSignature)).toEqual([
+        "turn",
+        "conversation:assistant",
+        "work:form",
+        "conversation:assistant",
+      ]);
+      const fold = timeline.rows[0];
+      if (fold?.kind !== "turn") throw new Error("fold row missing");
+      const response = await harness.app.request(
+        `/api/v1/threads/${threadId}/timeline/turn-summary-details?turnId=${fold.turnId}&sourceSeqStart=${fold.sourceSeqStart}&sourceSeqEnd=${fold.sourceSeqEnd}`,
+      );
+      expect(response.status).toBe(200);
+      const details = timelineTurnSummaryDetailsResponseSchema.parse(
+        await readJson(response),
+      );
+      expect(details.rows.map(rowSignature)).toEqual(["work:tool", "work:tool"]);
+    });
+  });
 });
 
 function seedPagedFinishedTurns(
