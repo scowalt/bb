@@ -225,29 +225,50 @@ function createPiEventSeeder(harness: TestAppHarness) {
   return { threadId: thread.id, seed };
 }
 
+const PENDING = { status: "pending", statusReason: null, resolution: null };
+
+function seedQuestionState(
+  seed: ReturnType<typeof createPiEventSeeder>["seed"],
+  state: QuestionFinalState | typeof PENDING,
+): void {
+  seed("system/interaction/lifecycle", threadScope(), {
+    interaction: {
+      id: "which-version",
+      status: state.status,
+      statusReason: state.statusReason,
+      origin: {
+        kind: "plugin",
+        pluginId: "ask-user-question",
+        rendererId: "question",
+      },
+      payload: { kind: "plugin", title: "Which version?" },
+      resolution: state.resolution,
+    },
+  });
+}
+
 function seedQuestion(
   seed: ReturnType<typeof createPiEventSeeder>["seed"],
   finalState: QuestionFinalState,
 ): void {
-  for (const state of [
-    { status: "pending", statusReason: null, resolution: null },
-    finalState,
-  ]) {
-    seed("system/interaction/lifecycle", threadScope(), {
-      interaction: {
-        id: "which-version",
-        status: state.status,
-        statusReason: state.statusReason,
-        origin: {
-          kind: "plugin",
-          pluginId: "ask-user-question",
-          rendererId: "question",
-        },
-        payload: { kind: "plugin", title: "Which version?" },
-        resolution: state.resolution,
-      },
-    });
-  }
+  seedQuestionState(seed, PENDING);
+  seedQuestionState(seed, finalState);
+}
+
+function seedToolCall(
+  seed: ReturnType<typeof createPiEventSeeder>["seed"],
+  turn: ReturnType<typeof turnScope>,
+  id: string,
+): void {
+  seed("item/completed", turn, {
+    item: {
+      type: "toolCall",
+      id,
+      tool: "read",
+      status: "completed",
+      result: "ok",
+    },
+  });
 }
 
 describe("questions in finished turns", () => {
@@ -359,7 +380,63 @@ describe("questions in finished turns", () => {
       const details = timelineTurnSummaryDetailsResponseSchema.parse(
         await readJson(response),
       );
-      expect(details.rows.map(rowSignature)).toEqual(["work:tool", "work:tool"]);
+      expect(details.rows.map(rowSignature)).toEqual([
+        "work:tool",
+        "work:tool",
+      ]);
+    });
+  });
+
+  it("keeps every row of the next turn's fold when a question asked in one turn is answered during the next", async () => {
+    await withTestHarness(async (harness) => {
+      const { threadId, seed } = createPiEventSeeder(harness);
+      const first = turnScope("turn-1");
+      seed("turn/started", first, {});
+      seedToolCall(seed, first, "read-1");
+      seed("item/completed", first, {
+        item: {
+          type: "agentMessage",
+          id: "analysis",
+          text: "Here are three versions of the note.",
+        },
+      });
+      seedQuestionState(seed, PENDING);
+      seed("turn/completed", first, { status: "completed" });
+      const second = turnScope("turn-2");
+      seed("turn/started", second, {});
+      seedToolCall(seed, second, "read-2");
+      seedQuestionState(seed, ANSWERED);
+      seedToolCall(seed, second, "read-3");
+      seed("item/completed", second, {
+        item: {
+          type: "agentMessage",
+          id: "final",
+          text: "Where this stands: version B is in the draft.",
+        },
+      });
+      seed("turn/completed", second, { status: "completed" });
+
+      const timeline = await getTimeline(harness, threadId);
+      expect(timeline.rows.map(rowSignature)).toEqual([
+        "turn",
+        "conversation:assistant",
+        "work:form",
+        "turn",
+        "conversation:assistant",
+      ]);
+      const fold = timeline.rows[3];
+      if (fold?.kind !== "turn") throw new Error("fold row missing");
+      const response = await harness.app.request(
+        `/api/v1/threads/${threadId}/timeline/turn-summary-details?turnId=${fold.turnId}&sourceSeqStart=${fold.sourceSeqStart}&sourceSeqEnd=${fold.sourceSeqEnd}`,
+      );
+      expect(response.status).toBe(200);
+      const details = timelineTurnSummaryDetailsResponseSchema.parse(
+        await readJson(response),
+      );
+      expect(details.rows.map(rowSignature)).toEqual([
+        "work:tool",
+        "work:tool",
+      ]);
     });
   });
 });
