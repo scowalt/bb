@@ -232,8 +232,7 @@ describe("asking a question", () => {
         answers: { q0: { selected: ["q0o0"], freeText: "with pgbouncer" } },
       }),
     ).toMatchObject({
-      title:
-        "Answered Which database should we use? — Postgres (Recommended); with pgbouncer",
+      title: "Answered Database — Postgres (Recommended); with pgbouncer",
       detail:
         "- Which database should we use? — Postgres (Recommended); with pgbouncer",
       payload: expect.objectContaining({
