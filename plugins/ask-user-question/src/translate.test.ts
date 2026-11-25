@@ -7,6 +7,7 @@ import {
   buildInteractionPayload,
   buildInteractionTitle,
   buildToolResult,
+  describeAnswers,
   validateToolInput,
 } from "./translate.js";
 
@@ -275,5 +276,74 @@ describe("buildToolResult", () => {
 
     expect(result.answers).not.toHaveProperty("Which DB?");
     expect(result.answers["Which extras?"]).toBe("Tracing");
+  });
+});
+
+describe("describeAnswers", () => {
+  function describeWithinHostLimits(
+    questions: { question: string; header: string }[],
+    answers: Record<string, { selected: string[]; freeText?: string }>,
+  ) {
+    const payload = buildInteractionPayload(
+      parseInput({
+        questions: questions.map((question) => ({
+          ...question,
+          options: twoOptions,
+        })),
+      }),
+    );
+    const description = describeAnswers(
+      payload,
+      buildToolResult(payload, { answers }),
+    );
+    expect(description.title.length).toBeLessThanOrEqual(160);
+    expect(description.detail.length).toBeLessThanOrEqual(280);
+    return description;
+  }
+
+  it("titles a long question by its header and keeps the whole question in the detail", () => {
+    const question =
+      "PR #246 is green, and every CI job passed. Merging it starts a production deploy. Should I merge it and then measure prod against the baseline?";
+    const description = describeWithinHostLimits(
+      [{ question, header: "Merge #246" }],
+      {
+        q0: { selected: ["q0o0"] },
+      },
+    );
+
+    expect(description.title).toBe("Answered Merge #246 — Postgres");
+    expect(description.detail).toBe(`- ${question} — Postgres`);
+  });
+
+  it("shortens a long free-text answer to fit the title", () => {
+    const answer = `Neither. ${"Use the managed queue we already run. ".repeat(12)}`;
+    const description = describeWithinHostLimits(
+      [{ question: "Which database should we use?", header: "Database" }],
+      { q0: { selected: [], freeText: answer } },
+    );
+
+    expect(description.title).toMatch(
+      /^Answered Database — Neither\. Use the .+…$/,
+    );
+  });
+
+  it("keeps every answer in the detail when several long questions overflow it", () => {
+    const questions = ["schema", "cache", "deploy"].map((topic) => ({
+      question: `Before I change the ${topic}, which of these options should I take, given everything we found in the investigation so far and the constraints you listed earlier?`,
+      header: topic,
+    }));
+    const description = describeWithinHostLimits(questions, {
+      q0: { selected: ["q0o0"] },
+      q1: { selected: ["q1o1"] },
+      q2: { selected: [], freeText: "Ask me again tomorrow" },
+    });
+
+    expect(description.detail.split("\n")).toEqual([
+      expect.stringMatching(/^- Before I change the schema, .+… — Postgres$/),
+      expect.stringMatching(/^- Before I change the cache, .+… — SQLite$/),
+      expect.stringMatching(
+        /^- Before I change the deploy, .+… — Ask me again tomorrow$/,
+      ),
+    ]);
   });
 });
