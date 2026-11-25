@@ -11,6 +11,10 @@ import {
 } from "./contracts.js";
 import { NOT_UNIQUE_MESSAGE } from "./tool-definition.js";
 
+const MAX_DESCRIPTION_TITLE_LENGTH = 160;
+const MAX_DESCRIPTION_DETAIL_LENGTH = 280;
+const ANSWER_SEPARATOR = " — ";
+
 export function validateToolInput(input: ToolInput): string | null {
   const prompts = input.questions.map((question) => question.question);
   if (new Set(prompts).size !== prompts.length) return NOT_UNIQUE_MESSAGE;
@@ -87,15 +91,56 @@ export function describeAnswers(
   const [first] = payload.questions;
   const title =
     payload.questions.length === 1 && first && entries[0]
-      ? `Answered ${first.prompt} — ${entries[0][1]}`
+      ? fitAnswer(
+          `Answered ${first.shortLabel}`,
+          entries[0][1],
+          MAX_DESCRIPTION_TITLE_LENGTH,
+        )
       : `Answered ${entries.length} of ${payload.questions.length} questions`;
-  const detail = payload.questions
-    .map((question) => {
-      const answer = result.answers[question.prompt];
-      return `- ${question.prompt} — ${answer ?? "no answer"}`;
-    })
-    .join("\n");
+  const detail = fitDetail(
+    payload.questions.map((question) => ({
+      question: `- ${question.prompt}`,
+      answer: result.answers[question.prompt] ?? "no answer",
+    })),
+  );
   return { title, detail, payload: result };
+}
+
+function fitDetail(lines: { question: string; answer: string }[]): string {
+  const fitted = lines.map(() => "");
+  let room = MAX_DESCRIPTION_DETAIL_LENGTH - (lines.length - 1);
+  const shortestFirst = lines
+    .map((line, index) => ({
+      line,
+      index,
+      length:
+        line.question.length + ANSWER_SEPARATOR.length + line.answer.length,
+    }))
+    .sort((a, b) => a.length - b.length);
+  shortestFirst.forEach(({ line, index, length }, rank) => {
+    const share = Math.min(
+      length,
+      Math.floor(room / (shortestFirst.length - rank)),
+    );
+    room -= share;
+    fitted[index] = fitAnswer(line.question, line.answer, share);
+  });
+  return fitted.join("\n");
+}
+
+function fitAnswer(question: string, answer: string, max: number): string {
+  const room = max - ANSWER_SEPARATOR.length;
+  const fittedAnswer = clip(
+    answer,
+    Math.max(Math.ceil(room / 2), room - question.length),
+  );
+  return `${clip(question, room - fittedAnswer.length)}${ANSWER_SEPARATOR}${fittedAnswer}`;
+}
+
+function clip(text: string, max: number): string {
+  return text.length <= max
+    ? text
+    : `${sliceUtf16Head(text, max - 1).trimEnd()}…`;
 }
 
 export function buildInteractionTitle(payload: InteractionPayload): string {
