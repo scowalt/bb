@@ -172,6 +172,7 @@ type ThreadTimelineTurnDetailsFromEventsResult =
   | {
       kind: "matched";
       rows: TimelineRow[];
+      summaryRow: Extract<TimelineRow, { kind: "turn" }>;
     }
   | {
       kind: "missing-match";
@@ -1352,6 +1353,7 @@ export function buildThreadTimelineTurnDetailsFromEvents(
     return {
       kind: "matched",
       rows: materializeTimelineMessages(matchingSummary.messages, options),
+      summaryRow: matchingSummary.row,
     };
   }
   if (plan.some((item) => item.kind === "summary")) {
