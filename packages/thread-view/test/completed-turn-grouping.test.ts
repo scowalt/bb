@@ -7,9 +7,13 @@ import type {
   EventProjectionCommandMessage,
   EventProjectionMessage,
   EventProjectionOperationMessage,
+  EventProjectionPluginFormLifecycle,
+  EventProjectionPluginFormLifecycleMessage,
   EventProjectionTurnRequest,
   EventProjectionTurn,
   EventProjectionUserMessage,
+  EventProjectionUserQuestionLifecycle,
+  EventProjectionUserQuestionLifecycleMessage,
 } from "../src/event-projection-types.js";
 
 interface MessageBaseArgs {
@@ -89,6 +93,55 @@ function legacyUserMessage(
   return {
     ...assistantMessage(args),
     isLegacyUserMessage: true,
+  };
+}
+
+function pluginFormMessage(
+  args: MessageBaseArgs & { lifecycle: EventProjectionPluginFormLifecycle },
+): EventProjectionPluginFormLifecycleMessage {
+  return {
+    ...messageBase(args),
+    kind: "plugin-form-lifecycle",
+    interactionId: args.id,
+    lifecycle: args.lifecycle,
+    status: (
+      {
+        pending: "pending",
+        submitted: "completed",
+        cancelled: "interrupted",
+      } as const
+    )[args.lifecycle],
+    pluginId: "ask-user-question",
+    rendererId: "question",
+    title: "Which version?",
+    statusReason: null,
+    presentation: {
+      label: { pending: "Asking a question", completed: "Asked" },
+      icon: { glyph: "MessageQuestion" },
+    },
+    payload: null,
+  };
+}
+
+function userQuestionMessage(
+  args: MessageBaseArgs & { lifecycle: EventProjectionUserQuestionLifecycle },
+): EventProjectionUserQuestionLifecycleMessage {
+  return {
+    ...messageBase(args),
+    kind: "user-question-lifecycle",
+    interactionId: args.id,
+    lifecycle: args.lifecycle,
+    status: (
+      {
+        pending: "pending",
+        resolving: "pending",
+        answered: "completed",
+        interrupted: "interrupted",
+      } as const
+    )[args.lifecycle],
+    questions: [],
+    answers: null,
+    statusReason: null,
   };
 }
 
@@ -271,6 +324,36 @@ describe("groupCompletedTurnMessages", () => {
       "assistant-after",
     ]);
   });
+
+  it.each([
+    ...(["pending", "submitted", "cancelled"] as const).map((lifecycle) => ({
+      name: `${lifecycle} plugin form`,
+      question: pluginFormMessage({ id: "question", seq: 3, lifecycle }),
+    })),
+    ...(["pending", "answered", "interrupted"] as const).map((lifecycle) => ({
+      name: `${lifecycle} native question`,
+      question: userQuestionMessage({ id: "question", seq: 3, lifecycle }),
+    })),
+  ])(
+    "keeps the question and the text before it visible for a $name",
+    ({ question }) => {
+      const read = commandMessage({ id: "read", seq: 1 });
+      const analysis = assistantMessage({ id: "analysis", seq: 2 });
+      const followUp = commandMessage({ id: "follow-up", seq: 4 });
+      const final = assistantMessage({ id: "final", seq: 5 });
+      const groups = groupCompletedTurnMessages(
+        completedTurn([read, analysis, question, followUp, final], final),
+      );
+
+      expect(groups.summaryItems).toMatchObject([
+        { kind: "summary", sourceMessages: [{ id: "read" }] },
+        { kind: "ungrouped-message", message: { id: "analysis" } },
+        { kind: "ungrouped-message", message: { id: "question" } },
+        { kind: "summary", sourceMessages: [{ id: "follow-up" }] },
+      ]);
+      expect(groups.terminalMessages).toEqual([final]);
+    },
+  );
 
   it("segments summary groups around converted legacy user messages", () => {
     const turn = completedTurn(

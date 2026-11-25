@@ -189,6 +189,106 @@ describe("finished turn display per provider", () => {
   });
 });
 
+describe("questions in finished turns", () => {
+  it.each([
+    {
+      outcome: "answered",
+      status: "resolved",
+      statusReason: null,
+      resolution: { kind: "plugin_submitted" },
+    },
+    {
+      outcome: "timed out",
+      status: "interrupted",
+      statusReason: "timeout",
+      resolution: null,
+    },
+  ] as const)(
+    "keeps the text before a question visible in the timeline and the outline when it is $outcome",
+    async (finalState) => {
+      await withTestHarness(async (harness) => {
+        const { environment, thread } = seedThreadFixture(harness, {
+          thread: { providerId: "pi" },
+        });
+        let sequence = 0;
+        const seed = (
+          type: Parameters<typeof seedEvent>[1]["type"],
+          scope: ReturnType<typeof turnScope> | ReturnType<typeof threadScope>,
+          data: Record<string, unknown>,
+        ) => {
+          sequence += 1;
+          seedEvent(harness.deps, {
+            threadId: thread.id,
+            environmentId: environment.id,
+            providerThreadId: "p1",
+            scope,
+            sequence,
+            type,
+            data,
+          });
+        };
+        const turn = turnScope("turn-1");
+        seed("turn/started", turn, {});
+        seed("item/completed", turn, {
+          item: {
+            type: "toolCall",
+            id: "read",
+            tool: "read",
+            status: "completed",
+            result: "ok",
+          },
+        });
+        seed("item/completed", turn, {
+          item: {
+            type: "agentMessage",
+            id: "analysis",
+            text: "Here are three versions of the note.",
+          },
+        });
+        for (const state of [
+          { status: "pending", statusReason: null, resolution: null },
+          finalState,
+        ]) {
+          seed("system/interaction/lifecycle", threadScope(), {
+            interaction: {
+              id: "which-version",
+              status: state.status,
+              statusReason: state.statusReason,
+              origin: {
+                kind: "plugin",
+                pluginId: "ask-user-question",
+                rendererId: "question",
+              },
+              payload: { kind: "plugin", title: "Which version?" },
+              resolution: state.resolution,
+            },
+          });
+        }
+        seed("item/completed", turn, {
+          item: {
+            type: "agentMessage",
+            id: "final",
+            text: "Where this stands: version B is in the draft.",
+          },
+        });
+        seed("turn/completed", turn, { status: "completed" });
+
+        const timeline = await getTimeline(harness, thread.id);
+        expect(timeline.rows.map(rowSignature)).toEqual([
+          "turn",
+          "conversation:assistant",
+          "work:form",
+          "conversation:assistant",
+        ]);
+        expect(await getOutlinePreviews(harness, thread.id)).toEqual([
+          "Here are three versions of the note.",
+          "Where this stands: version B is in the draft.",
+        ]);
+      });
+    },
+  );
+});
+
 function seedPagedFinishedTurns(
   harness: TestAppHarness,
   turnCount: number,
