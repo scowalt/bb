@@ -126,7 +126,11 @@ describe("timeline row planning", () => {
         turnId: expected.turnId,
       },
     });
-    expect(details).toEqual({ kind: "matched", rows: expected.children });
+    expect(details).toEqual({
+      kind: "matched",
+      rows: expected.children,
+      summaryRow: { ...expected, children: null },
+    });
   });
 
   it("expands each group of a split turn from its first message", () => {
@@ -161,7 +165,11 @@ describe("timeline row planning", () => {
           turnId: group.turnId,
         },
       });
-      expect(details).toEqual({ kind: "matched", rows: group.children });
+      expect(details).toEqual({
+        kind: "matched",
+        rows: group.children,
+        summaryRow: { ...group, children: null },
+      });
     }
   });
 });

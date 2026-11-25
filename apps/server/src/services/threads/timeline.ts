@@ -97,6 +97,7 @@ import {
   listStoredDelegatingItemRowsByItemIds,
   listStoredTurnInputAcceptedRowsByClientRequestIds,
   listStoredTurnRejectedRowsByClientRequestIds,
+  listStoredTurnCompletedRowsByTurnIds,
   listStoredTurnStartedRowsByTurnIdsUpToSequence,
   listTimelineWindowHintsDescending,
   scopedItemRefKey,
@@ -2552,6 +2553,111 @@ function buildTimelineTurnSummaryDetailsPage(
   };
 }
 
+function listWholeThreadInteractionLifecycleRows(
+  db: DbConnection,
+  args: {
+    beforeSequence: number;
+    maxInlineOutputChars: InlineOutputCharLimit;
+    rows: readonly StoredEventRow[];
+    threadId: string;
+  },
+): StoredEventRow[] {
+  const interactionIds = new Set<string>();
+  for (const row of args.rows) {
+    if (row.turnId !== null || row.type !== "system/interaction/lifecycle") {
+      continue;
+    }
+    const event = decodeStoredEventRowCached(db, row);
+    if (event.type === "system/interaction/lifecycle") {
+      interactionIds.add(event.interaction.id);
+    }
+  }
+  return listStoredThreadInteractionLifecycleRows(db, {
+    beforeSequence: args.beforeSequence,
+    interactionIds: [...interactionIds],
+    maxInlineOutputChars: args.maxInlineOutputChars,
+    sequenceStart: 0,
+    threadId: args.threadId,
+  });
+}
+
+function listTurnPromptRequestRows(
+  db: DbConnection,
+  args: {
+    maxSeq: number;
+    rows: readonly StoredEventRow[];
+    threadId: string;
+    turnId: string;
+  },
+): StoredEventRow[] {
+  const presentRequestIds = new Set(
+    args.rows.flatMap((row) => {
+      const requestId = tryReadClientTurnRequestedRequestId(row);
+      return requestId === null ? [] : [requestId];
+    }),
+  );
+  const keys = args.rows
+    .filter(
+      (row) => row.type === "turn/input/accepted" && row.turnId === args.turnId,
+    )
+    .map((row) => ({
+      acceptedSequence: row.sequence,
+      requestId: parseAcceptedInputClientRequestId(row),
+      threadId: args.threadId,
+    }))
+    .filter((key) => !presentRequestIds.has(key.requestId));
+  return listStoredClientTurnRequestRowsByKeys(db, { keys }).filter(
+    (row) => row.sequence <= args.maxSeq,
+  );
+}
+
+interface TimelineTurnDetailsSource {
+  children: ReturnType<typeof buildThreadTimelineTurnDetailsFromEvents>;
+  projectionEvents: ThreadEventWithMeta[];
+}
+
+function readFinishedTurnFoldDetails(
+  db: DbConnection,
+  thread: Thread,
+  options: BuildTimelineTurnSummaryDetailsOptions,
+  snapshot: TimelineSnapshot,
+): TimelineTurnDetailsSource | null {
+  if (options.itemId !== null) {
+    return null;
+  }
+  const completed = listStoredTurnCompletedRowsByTurnIds(db, {
+    threadId: thread.id,
+    turnIds: [options.turnId],
+  })
+    .filter((row) => row.sequence <= snapshot.maxSeq)
+    .at(-1);
+  const started = listStoredTurnStartedRowsByTurnIdsUpToSequence(db, {
+    threadId: thread.id,
+    sequenceCutoff: options.sourceSeqStart,
+    turnIds: [options.turnId],
+  }).at(0);
+  if (completed === undefined || started === undefined) {
+    return null;
+  }
+  const details = readTimelineTurnDetailsRange(
+    db,
+    thread,
+    options,
+    {
+      delegatedTurnIds: [],
+      sequenceEnd: Math.max(completed.sequence, options.sourceSeqEnd),
+      sequenceStart: started.sequence,
+    },
+    snapshot,
+    options.sourceSeqStart,
+  );
+  const { children } = details;
+  return children.kind === "matched" &&
+    children.summaryRow.sourceSeqEnd === options.sourceSeqEnd
+    ? details
+    : null;
+}
+
 function projectTimelineTurnSummaryDetails(
   db: DbConnection,
   thread: Thread,
@@ -2560,6 +2666,54 @@ function projectTimelineTurnSummaryDetails(
   snapshot: TimelineSnapshot,
   now: number,
 ): { expiresAt: number | null; rows: TimelineRow[] } {
+  const { children, projectionEvents } =
+    readFinishedTurnFoldDetails(db, thread, options, snapshot) ??
+    readTimelineTurnDetailsRange(
+      db,
+      thread,
+      options,
+      readRange,
+      snapshot,
+      Math.min(options.sourceSeqStart, readRange.sequenceStart),
+    );
+  if (children.kind === "missing-match") {
+    throw new ApiError(
+      400,
+      "invalid_request",
+      `Timeline turn summary details range ${readRange.sequenceStart}-${readRange.sequenceEnd} does not include turn ${options.turnId}`,
+    );
+  }
+  const retainedOutputPreviews = readRetainedOutputPreviews(
+    projectionEvents,
+    "detail-limit",
+    now,
+  );
+  const scopedRows = scopeTimelineTurnDetailsRows(
+    children.rows,
+    retainedOutputPreviews.byCallId,
+    options,
+  );
+  if (scopedRows === null) {
+    throw new ApiError(
+      400,
+      "invalid_request",
+      `Timeline turn summary details range ${readRange.sequenceStart}-${readRange.sequenceEnd} does not include item ${options.itemId}`,
+    );
+  }
+  return {
+    expiresAt: retainedOutputPreviews.expiresAt,
+    rows: scopedRows,
+  };
+}
+
+function readTimelineTurnDetailsRange(
+  db: DbConnection,
+  thread: Thread,
+  options: BuildTimelineTurnSummaryDetailsOptions,
+  readRange: TimelineTurnDetailsReadRange,
+  snapshot: TimelineSnapshot,
+  summarySeqStart: number,
+): TimelineTurnDetailsSource {
   const includeDiagnosticOperations = options.includeDiagnosticOperations;
   const detailsWindow = {
     beforeSequence: Math.min(readRange.sequenceEnd, snapshot.maxSeq) + 1,
@@ -2609,6 +2763,12 @@ function projectTimelineTurnSummaryDetails(
   const eventRows = mergeStoredEventRowsById([
     ...exactEventRowsForRequestedTurn,
     ...acceptedInputRowsByTurn.requestedTurnRows,
+    ...listWholeThreadInteractionLifecycleRows(db, {
+      beforeSequence: snapshot.maxSeq + 1,
+      maxInlineOutputChars: detailsInlineOutputLimit,
+      rows: exactEventRowsForRequestedTurn,
+      threadId: thread.id,
+    }),
   ]);
 
   const hasCurrentStartedRow = eventRows.some(
@@ -2635,6 +2795,14 @@ function projectTimelineTurnSummaryDetails(
   const turnContextRows = mergeStoredEventRowsById([
     ...requestedTurnStartedRows,
     ...eventRows,
+    ...(hasCurrentStartedRow
+      ? listTurnPromptRequestRows(db, {
+          maxSeq: snapshot.maxSeq,
+          rows: eventRows,
+          threadId: thread.id,
+          turnId: options.turnId,
+        })
+      : []),
   ]);
   const turnLifecycleRows = listStoredEventRows(db, {
     threadId: thread.id,
@@ -2701,7 +2869,7 @@ function projectTimelineTurnSummaryDetails(
     options: {
       completedTurnDisplay: options.completedTurnDisplay,
       includeDiagnosticOperations,
-      sourceSeqStart: Math.min(options.sourceSeqStart, readRange.sequenceStart),
+      sourceSeqStart: summarySeqStart,
       summarizeShellCommands: options.summarizeShellCommands,
       turnId: options.turnId,
       providerDisplayName: options.providerDisplayName,
@@ -2710,33 +2878,5 @@ function projectTimelineTurnSummaryDetails(
       workspaceRoot: resolveThreadWorkspaceRoot(db, thread),
     },
   });
-
-  if (children.kind === "missing-match") {
-    throw new ApiError(
-      400,
-      "invalid_request",
-      `Timeline turn summary details range ${readRange.sequenceStart}-${readRange.sequenceEnd} does not include turn ${options.turnId}`,
-    );
-  }
-  const retainedOutputPreviews = readRetainedOutputPreviews(
-    projectionEvents,
-    "detail-limit",
-    now,
-  );
-  const scopedRows = scopeTimelineTurnDetailsRows(
-    children.rows,
-    retainedOutputPreviews.byCallId,
-    options,
-  );
-  if (scopedRows === null) {
-    throw new ApiError(
-      400,
-      "invalid_request",
-      `Timeline turn summary details range ${readRange.sequenceStart}-${readRange.sequenceEnd} does not include item ${options.itemId}`,
-    );
-  }
-  return {
-    expiresAt: retainedOutputPreviews.expiresAt,
-    rows: scopedRows,
-  };
+  return { children, projectionEvents };
 }
