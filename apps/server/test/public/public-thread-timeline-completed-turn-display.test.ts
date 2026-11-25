@@ -271,6 +271,37 @@ function seedToolCall(
   });
 }
 
+function startTurn(
+  seed: ReturnType<typeof createPiEventSeeder>["seed"],
+  turn: ReturnType<typeof turnScope>,
+  prompt: string | null,
+): void {
+  if (prompt === null) {
+    seed("turn/started", turn, {});
+    return;
+  }
+  const clientRequestId = encodeClientTurnRequestIdNumber({ value: 1 });
+  seed("client/turn/requested", threadScope(), {
+    direction: "outbound",
+    source: "tell",
+    initiator: "user",
+    request: { method: "turn/start", params: {} },
+    requestId: clientRequestId,
+    senderThreadId: null,
+    input: [{ type: "text", text: prompt, mentions: [] }],
+    target: { kind: "new-turn" },
+    execution: {
+      model: "claude-opus",
+      serviceTier: "default",
+      reasoningLevel: "medium",
+      permissionMode: "full",
+      source: "client/turn/requested",
+    },
+  });
+  seed("turn/started", turn, {});
+  seed("turn/input/accepted", turn, { clientRequestId });
+}
+
 describe("questions in finished turns", () => {
   it.each([
     { outcome: "answered", ...ANSWERED },
@@ -387,58 +418,77 @@ describe("questions in finished turns", () => {
     });
   });
 
-  it("keeps every row of the next turn's fold when a question asked in one turn is answered during the next", async () => {
-    await withTestHarness(async (harness) => {
-      const { threadId, seed } = createPiEventSeeder(harness);
-      const first = turnScope("turn-1");
-      seed("turn/started", first, {});
-      seedToolCall(seed, first, "read-1");
-      seed("item/completed", first, {
-        item: {
-          type: "agentMessage",
-          id: "analysis",
-          text: "Here are three versions of the note.",
-        },
-      });
-      seedQuestionState(seed, PENDING);
-      seed("turn/completed", first, { status: "completed" });
-      const second = turnScope("turn-2");
-      seed("turn/started", second, {});
-      seedToolCall(seed, second, "read-2");
-      seedQuestionState(seed, ANSWERED);
-      seedToolCall(seed, second, "read-3");
-      seed("item/completed", second, {
-        item: {
-          type: "agentMessage",
-          id: "final",
-          text: "Where this stands: version B is in the draft.",
-        },
-      });
-      seed("turn/completed", second, { status: "completed" });
-
-      const timeline = await getTimeline(harness, threadId);
-      expect(timeline.rows.map(rowSignature)).toEqual([
+  it.each([
+    {
+      prompt: null,
+      rows: [
         "turn",
         "conversation:assistant",
         "work:form",
         "turn",
         "conversation:assistant",
-      ]);
-      const fold = timeline.rows[3];
-      if (fold?.kind !== "turn") throw new Error("fold row missing");
-      const response = await harness.app.request(
-        `/api/v1/threads/${threadId}/timeline/turn-summary-details?turnId=${fold.turnId}&sourceSeqStart=${fold.sourceSeqStart}&sourceSeqEnd=${fold.sourceSeqEnd}`,
-      );
-      expect(response.status).toBe(200);
-      const details = timelineTurnSummaryDetailsResponseSchema.parse(
-        await readJson(response),
-      );
-      expect(details.rows.map(rowSignature)).toEqual([
-        "work:tool",
-        "work:tool",
-      ]);
-    });
-  });
+      ],
+    },
+    {
+      prompt: "Keep going.",
+      rows: [
+        "turn",
+        "conversation:assistant",
+        "work:form",
+        "conversation:user",
+        "turn",
+        "conversation:assistant",
+      ],
+    },
+  ])(
+    "keeps the next turn's fold whole and free of a question asked in one turn and answered during the next, with prompt $prompt",
+    async ({ prompt, rows }) => {
+      await withTestHarness(async (harness) => {
+        const { threadId, seed } = createPiEventSeeder(harness);
+        const first = turnScope("turn-1");
+        seed("turn/started", first, {});
+        seedToolCall(seed, first, "read-1");
+        seed("item/completed", first, {
+          item: {
+            type: "agentMessage",
+            id: "analysis",
+            text: "Here are three versions of the note.",
+          },
+        });
+        seedQuestionState(seed, PENDING);
+        seed("turn/completed", first, { status: "completed" });
+        const second = turnScope("turn-2");
+        startTurn(seed, second, prompt);
+        seedToolCall(seed, second, "read-2");
+        seedQuestionState(seed, ANSWERED);
+        seedToolCall(seed, second, "read-3");
+        seed("item/completed", second, {
+          item: {
+            type: "agentMessage",
+            id: "final",
+            text: "Where this stands: version B is in the draft.",
+          },
+        });
+        seed("turn/completed", second, { status: "completed" });
+
+        const timeline = await getTimeline(harness, threadId);
+        expect(timeline.rows.map(rowSignature)).toEqual(rows);
+        const fold = timeline.rows.at(-2);
+        if (fold?.kind !== "turn") throw new Error("fold row missing");
+        const response = await harness.app.request(
+          `/api/v1/threads/${threadId}/timeline/turn-summary-details?turnId=${fold.turnId}&sourceSeqStart=${fold.sourceSeqStart}&sourceSeqEnd=${fold.sourceSeqEnd}`,
+        );
+        expect(response.status).toBe(200);
+        const details = timelineTurnSummaryDetailsResponseSchema.parse(
+          await readJson(response),
+        );
+        expect(details.rows.map(rowSignature)).toEqual([
+          "work:tool",
+          "work:tool",
+        ]);
+      });
+    },
+  );
 });
 
 function seedPagedFinishedTurns(
